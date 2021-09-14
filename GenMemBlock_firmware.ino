@@ -43,6 +43,10 @@ enum {
   IS_DEVICE_BUSY,
   DEBUG_ON,
   DEBUG_OFF,
+  LOCK_ADDRESS,
+  LOCK_ADDRESS_AND_DATA,
+  ENABLE_WRITE_PROTECT,
+  DISABLE_WRITE_PROTECT,
 // no idea what is being asked
   UNKNOWN_ACTION
 };
@@ -101,6 +105,10 @@ int parseAction(String stringAction) {
   if (stringAction.equals("IS_ROM_BUSY")) return IS_DEVICE_BUSY;
   if (stringAction.equals("DEBUG_ON")) return DEBUG_ON;
   if (stringAction.equals("DEBUG_OFF")) return DEBUG_OFF;
+  if (stringAction.equals("LOCK_ADDRESS")) return LOCK_ADDRESS;
+  if (stringAction.equals("LOCK_ADDRESS_AND_DATA")) return LOCK_ADDRESS_AND_DATA;
+  if (stringAction.equals("ENABLE_WRITE_PROTECT")) return ENABLE_WRITE_PROTECT;
+  if (stringAction.equals("DISABLE_WRITE_PROTECT")) return DISABLE_WRITE_PROTECT;
   return UNKNOWN_ACTION;
 }
 
@@ -128,6 +136,10 @@ void loop() {
       case WRITE_128_PAGE: write128WordPage(); break;
       case DEBUG_ON: debugMode = true; Serial.println("DEBUG mode ON!"); break;
       case DEBUG_OFF: debugMode = false; Serial.println("DEBUG mode OFF!"); break;
+      case LOCK_ADDRESS: lockAddress(); break;
+      case LOCK_ADDRESS_AND_DATA: lockAddressAndData(); break;
+      case ENABLE_WRITE_PROTECT: writeProtect(true); break;
+      case DISABLE_WRITE_PROTECT: writeProtect(false); break;
       case UNKNOWN_ACTION: Serial.println("UNKNOWN_ACTION"); break;
       default: break;
     }
@@ -138,20 +150,33 @@ void loop() {
 
 int readDeviceId() {
   // sofwware id entry
-  writeByte(0x5555, 0xAA);
-  writeByte(0x2AAA, 0x55);
-  writeByte(0x5555, 0x90);
+  writeWordBoth(0x5555, 0xAA);
+  writeWordBoth(0x2AAA, 0x55);
+  writeWordBoth(0x5555, 0x90);
   delay(10);
   
   byte vendorId = in16bits(0);
   byte deviceId = in16bits(1);
   
   // sofwware id exit
-  writeByte(0x5555, 0xAA);
-  writeByte(0x2AAA, 0x55);
-  writeByte(0x5555, 0xF0);
+  writeWordBoth(0x5555, 0xAA);
+  writeWordBoth(0x2AAA, 0x55);
+  writeWordBoth(0x5555, 0xF0);
 
   return vendorId << 8 | deviceId;
+}
+
+void writeProtect(bool enable) {
+  if (!enable) {
+    writeWordBoth(0x5555, 0xAA);
+    writeWordBoth(0x2AAA, 0x55);
+    writeWordBoth(0x5555, 0x80);
+    writeWordBoth(0x5555, 0xAA);
+    writeWordBoth(0x2AAA, 0x55);
+    writeWordBoth(0x5555, 0x20);
+    delay(10);
+    Serial.println("WRITE_PROTECT_DISABLED");
+  }
 }
 
 void outputDeviceId() {
@@ -223,7 +248,7 @@ void debugErrorOut(int error) {
   }
 }
 
-int loadAddress(int &error, bool alignPageBoundary) {
+unsigned long loadAddress(int &error, bool alignPageBoundary) {
 
   long romSize = getRomSize(DeviceID);
   
@@ -292,9 +317,8 @@ int loadAddress(int &error) {
   loadAddress(error, false);
 }
 
-int loadData(unsigned int *buf) {
+int loadData(unsigned int *buf, unsigned int bufSize) {
   int error = SUCCESS;
-  unsigned int bufSize = 128;
 
   Serial.println("AWAIT_DATA_HEX");
 
@@ -306,11 +330,13 @@ int loadData(unsigned int *buf) {
     }
   }
 
-  int totalReadWords = 128;
+  int totalReadWords = bufSize;
   int wordsRead = 0;
   while (wordsRead < totalReadWords) {
+//    Serial.write(0x11); // XON
     char input[5];
     int bytesRead = Serial.readBytes(input, 4);
+//    Serial.write(0x13); // XOFF
     if (bytesRead < 4) {
       if (debugMode) {
         Serial.print("DEBUG: bytesRead: ");Serial.print(bytesRead);Serial.print(", expected: 4");
@@ -333,6 +359,8 @@ int loadData(unsigned int *buf) {
     buf[wordsRead++] = dataWord;
   }
   Serial.println("ACK_DATA");
+//  Serial.write(0x11); // XON
+
 
 //  Serial.print("Bytes left on the stream: ");Serial.println(Serial.available());
 
@@ -342,6 +370,10 @@ int loadData(unsigned int *buf) {
   }
 
   return SUCCESS;
+}
+
+int loadData(unsigned int *buf) {
+  return loadData(buf, 128);
 }
 
 int loadPages(int &error) {
@@ -404,6 +436,19 @@ void read128WordPage() {
     return;
   }
 
+  if (debugMode) {
+    char tmpStr[5];
+    Serial.print("DEBUG: on device read:"); Serial.print(address, HEX); Serial.print(" bytes: "); 
+    // output 128 words (we are using 2 chips each containing a byte) for the page
+    for (unsigned long i = 0; i < 128; i++) {
+       unsigned int val = in16bits(address + i);
+      sprintf(tmpStr, "%04X", val);
+      Serial.print(tmpStr);
+    }
+    Serial.println();
+  }
+
+  Serial.println("DATA_BEGIN");
   char tmpStr[5];
   int bytesToRead = 128;
   // output 128 words (we are using 2 chips each containing a byte) for the page
@@ -413,6 +458,64 @@ void read128WordPage() {
     Serial.print(tmpStr);
   }
   Serial.println();
+}
+
+
+void lockAddress() {
+  int error;
+  unsigned long address = loadAddress(error, false);
+
+  if (error) {
+    debugErrorOut(error);
+    Serial.print("ERR_NO_ADDR ");Serial.println(error, HEX);
+    return;
+  }
+
+  if (debugMode) {
+    Serial.print("DEBUG: Locking eeprom at address: ");Serial.print(address, HEX);Serial.print(", data: ");
+    unsigned int val = in16bits(address);
+    char tmpStr[5];
+    sprintf(tmpStr, "%04X", val);
+    Serial.println(tmpStr);
+  }
+
+  outAddress(address);
+
+  Serial.println("ADDR_LOCKED");
+}
+
+void lockAddressAndData() {
+  int error;
+  unsigned long address = loadAddress(error, false);
+  if (error) {
+    debugErrorOut(error);
+    Serial.print("ERR_NO_ADDR ");Serial.println(error, HEX);
+    return;
+  }
+
+  unsigned int data = 0;
+  error = loadData(&data, 1);
+  if (error) {
+    debugErrorOut(error);
+    Serial.print("ERR_NO_DATA ");Serial.println(error, HEX);
+    return;
+  }
+
+  if (debugMode) {
+    Serial.print("DEBUG: Locking eeprom at address: ");Serial.print(address, HEX);Serial.print(", data: ");
+    unsigned int val = in16bits(address);
+    char tmpStr[5];
+    sprintf(tmpStr, "%04X", data);
+    Serial.println(tmpStr);
+  }
+
+  outAddressAndData(address, data);
+
+  // disable OE on chip
+  digitalWrite(ROM_CE, LOW);
+  digitalWrite(ROM_OE, HIGH);
+
+  Serial.println("ADDR_AND_DATA_LOCKED");
 }
 
 
@@ -437,14 +540,27 @@ void read128x128WordPages() {
 
   // output 128 words (we are using 2 chips each containing a byte) for the page
   unsigned char crc = 0;
-  const int wordsPerPage = 128;
+  const long wordsPerPage = 128;
   unsigned int pageBuf[wordsPerPage];
   char tmpStr[5];
+
+  if (debugMode) {
+    Serial.print("DEBUG: Will read pages: ");Serial.print(pagesToLoad);  
+    Serial.println(", at addresses:");
+    for (unsigned long page = 0; page < pagesToLoad; page++) {
+      unsigned long pageOffset = page * wordsPerPage;
+      unsigned long read_at_address = address + pageOffset;
+      Serial.print("DEBUG: page:");Serial.print(page);Serial.print(", address:");Serial.println(read_at_address);
+    }
+  }
+
+  Serial.println("DATA_BEGIN");
 
   for (unsigned long page = 0; page < pagesToLoad; page++) {
     unsigned long pageOffset = page * wordsPerPage;
     for (unsigned long i = 0; i < wordsPerPage; i++) {
-      unsigned int val = in16bits(address + pageOffset + i);
+      unsigned long read_at_address = address + pageOffset + i;
+      unsigned int val = in16bits(read_at_address);
       unsigned char *vals = (unsigned char *)&val;
       pageBuf[i] = val;
       while (Serial.availableForWrite() < 2) {}
@@ -498,12 +614,18 @@ void write128WordPage() {
   error = loadData(data);
   if (error) {
     debugErrorOut(error);
+    if (debugMode) {
+      char tmpStr[5];
+      Serial.print("DEBUG: Received page: ");
+      for (unsigned int i = 0; i < 128; i++) {
+        sprintf(tmpStr, "%04X", data[i]);
+        Serial.print(tmpStr);
+      }
+      Serial.println();
+    }
     Serial.print("ERR_NO_DATA ");Serial.println(error, HEX);
     return;
   }
-
-  unsigned char calculated_crc = calc_crc((unsigned char *)data, 128 * sizeof(int));
-  Serial.println(calculated_crc, HEX);
 
   if (debugMode) {
     char tmpStr[5];
@@ -517,14 +639,23 @@ void write128WordPage() {
   }
 
   writeBuffer(address, data, 128);
+
   Serial.println("ACK_DATA_WRITE");
+
+  unsigned char calculated_crc = calc_crc((unsigned char *)data, 128 * sizeof(int));
+  Serial.println(calculated_crc, HEX);
 }
 
 
 // internals for working with the eeprom chips
 
-void writeByte(long addr24bit, int value) {
+void writeWord(long addr24bit, int value) {
   writeBuffer(addr24bit, &value, 1);
+}
+
+void writeWordBoth(long addr24bit, int value) {
+  int output = value + (value << 8);
+  writeBuffer(addr24bit, &output, 1);
 }
 
 void writeBuffer(long addr24bit, int *buffer, int bufferSize) {
@@ -608,7 +739,7 @@ unsigned int in16bits(long addr24bit) {
   digitalWrite(IN_LATCH_PIN, HIGH);
 
   SPI.begin();
-  unsigned int inValue = SPI.transfer16(0);
+  unsigned int inValue = SPI.transfer16(1);
   SPI.end();
 
   return inValue;
@@ -631,9 +762,9 @@ unsigned char calc_crc(unsigned char message[], unsigned int len, unsigned char 
         crc ^= CRC7_POLY;
       crc >>= 1;
     }
-//    if (debugMode) {
-//      Serial.print("DEBUG: ");Serial.print(i);Serial.print(": ");Serial.print(message[i], HEX);Serial.println(crc);
-//    }
+    if (debugMode && (i % 4) == 0) {
+//      Serial.print("DEBUG: ");Serial.print(i);Serial.print(": ");Serial.print(message[i], HEX); Serial.print(" "); Serial.println(crc);
+    }
     
   }
   return crc;
