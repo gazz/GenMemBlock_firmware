@@ -1,6 +1,8 @@
 #include <SPI.h>
 
+//const unsigned long baudRate = 500000;
 const unsigned long baudRate = 115200;
+//const unsigned long baudRate = 19200;
 
 bool debugMode = true;
 int DeviceID = 0;
@@ -65,62 +67,68 @@ enum {
   UNKNOWN_ACTION
 };
 
+bool enabled = false;
+
 void enableControl() {
-  digitalWrite(BUS_GEN_ENABLE, HIGH);
+  if (!enabled) {
+    enabled = true;
+    digitalWrite(BUS_GEN_ENABLE, HIGH);
 
-  digitalWrite(ROM_WE, HIGH);
-  digitalWrite(ROM_OE, HIGH);
-  digitalWrite(ROM_CE, HIGH);
-  pinMode(ROM_OE, OUTPUT);
-  pinMode(ROM_CE, OUTPUT);
-  pinMode(ROM_WE, OUTPUT);
-
-  // input setup
-  pinMode(IN_SER_PIN, INPUT);
-  pinMode(IN_LATCH_PIN, OUTPUT);
-  pinMode(IN_CLK_PIN, OUTPUT);
-  digitalWrite(IN_LATCH_PIN, HIGH);
-
-  // output setup
-  digitalWrite(OUT_BUF_CLR, HIGH);
-  digitalWrite(OUT_BUF_LATCH, HIGH);
-  digitalWrite(OUT_BUF_ADDR_OE, HIGH);
-  digitalWrite(OUT_BUF_DATA_OE, HIGH);
-  pinMode(OUT_BUF_SER, OUTPUT);
-  pinMode(OUT_BUF_CLR, OUTPUT);
-  pinMode(OUT_BUF_CLK, OUTPUT);
-  pinMode(OUT_BUF_LATCH, OUTPUT);
-  pinMode(OUT_BUF_ADDR_OE, OUTPUT);
-  pinMode(OUT_BUF_DATA_OE, OUTPUT);
-
-  delay(100);
-  DeviceID = readDeviceId();
+    digitalWrite(ROM_WE, HIGH);
+    digitalWrite(ROM_OE, HIGH);
+    digitalWrite(ROM_CE, HIGH);
+    pinMode(ROM_OE, OUTPUT);
+    pinMode(ROM_CE, OUTPUT);
+    pinMode(ROM_WE, OUTPUT);
+  
+    // input setup
+    pinMode(IN_SER_PIN, INPUT);
+    pinMode(IN_LATCH_PIN, OUTPUT);
+    pinMode(IN_CLK_PIN, OUTPUT);
+    digitalWrite(IN_LATCH_PIN, HIGH);
+  
+    // output setup
+    digitalWrite(OUT_BUF_CLR, HIGH);
+    digitalWrite(OUT_BUF_LATCH, HIGH);
+    digitalWrite(OUT_BUF_ADDR_OE, HIGH);
+    digitalWrite(OUT_BUF_DATA_OE, HIGH);
+    pinMode(OUT_BUF_SER, OUTPUT);
+    pinMode(OUT_BUF_CLR, OUTPUT);
+    pinMode(OUT_BUF_CLK, OUTPUT);
+    pinMode(OUT_BUF_LATCH, OUTPUT);
+    pinMode(OUT_BUF_ADDR_OE, OUTPUT);
+    pinMode(OUT_BUF_DATA_OE, OUTPUT);
+  
+    delay(100);
+  }
 }
 
 void disableControl() {
+  
+  digitalWrite(OUT_BUF_ADDR_OE, HIGH);
+  digitalWrite(OUT_BUF_DATA_OE, HIGH);
 
-  // read dummy 2 pages to reset ROM, why is it acting up like this?
-  readDummyToResetRom();
-
-  pinMode(OUT_BUF_ADDR_OE, INPUT_PULLUP);
-  pinMode(OUT_BUF_DATA_OE, INPUT_PULLUP);
-
+  digitalWrite(ROM_OE, HIGH);
+  digitalWrite(ROM_CE, HIGH);
+  digitalWrite(ROM_WE, HIGH);
   pinMode(ROM_OE, INPUT_PULLUP);
   pinMode(ROM_CE, INPUT_PULLUP);
   pinMode(ROM_WE, INPUT_PULLUP);
-  
+
   // input setup
-  pinMode(IN_SER_PIN, INPUT_PULLUP);
-  pinMode(IN_LATCH_PIN, INPUT_PULLUP);
-  pinMode(IN_CLK_PIN, INPUT_PULLUP);
+  digitalWrite(IN_SER_PIN, HIGH);
+  digitalWrite(IN_LATCH_PIN, HIGH);
+  digitalWrite(IN_CLK_PIN, HIGH);
 
   digitalWrite(BUS_GEN_ENABLE, LOW);
-
+  enabled = false;
   delay(50);
 }
 
 void readDummyToResetRom() {
-  in16bits(255);
+  for (int i = 0; i < 256; i++) {
+    in16bits(i);
+  }
 }
 
 
@@ -133,6 +141,8 @@ void setup() {
   digitalWrite(BUS_DATA_DIR, HIGH);
   pinMode(BUS_GEN_ENABLE, OUTPUT);
   pinMode(BUS_DATA_DIR, OUTPUT);
+
+  DeviceID = readDeviceId();
 
 //  enableControl();
 
@@ -558,7 +568,7 @@ void read128WordPage() {
   char tmpStr[5];
   int bytesToRead = 128;
   // output 128 words (we are using 2 chips each containing a byte) for the page
-  for (unsigned int i = 0; i < bytesToRead; i++) {
+  for (unsigned long i = 0; i < bytesToRead; i++) {
     unsigned int val = in16bits(address + i);
     sprintf(tmpStr, "%04X", val);
     Serial.print(tmpStr);
@@ -662,15 +672,18 @@ void read128x128WordPages() {
 
   unsigned int data[128] = {0};
 
-
   for (unsigned long page = 0; page < pagesToLoad; page++) {
     unsigned long pageOffset = page * wordsPerPage;
+    unsigned char page_crc = 0;
     for (unsigned long i = 0; i < wordsPerPage; i++) {
       unsigned long read_at_address = address + pageOffset + i;
       unsigned int val = in16bits(read_at_address);
-      unsigned char *vals = (unsigned char *)&val;
       data[i] = val;
       while (Serial.availableForWrite() < 2) {}
+    }
+
+    for (unsigned long i = 0; i < wordsPerPage; i++) {
+      unsigned char *vals = (unsigned char *)&data[i];
       Serial.write(vals[1]);
       Serial.write(vals[0]);
     }
@@ -776,18 +789,19 @@ void write128WordXPages() {
     Serial.print(F("ERR_NO_PAGES "));Serial.println(error, HEX);
     return;
   }
-  unsigned int data[128] = {0};
+  const int num128Pages = 1;
+  unsigned int data[128 * num128Pages] = {0};
 
   // we still have to write page by page via serial as atmega only has 2KB of ram
   unsigned char calculated_crc = 0;
-  for (unsigned int page = 0; page < pagesToLoad; page++) {
-    error = loadData(data, 128);
+  for (unsigned long page = 0; page < pagesToLoad; page += num128Pages) {
+    error = loadData(data, 128 * num128Pages);
     if (error) {
       debugErrorOut(error);
       if (debugMode) {
         char tmpStr[5];
         Serial.print(F("DEBUG: Received page: "));
-        for (unsigned int i = 0; i < 128; i++) {
+        for (unsigned int i = 0; i < 128 * num128Pages; i++) {
           sprintf(tmpStr, "%04X", data[i]);
           Serial.print(tmpStr);
         }
@@ -796,19 +810,20 @@ void write128WordXPages() {
       Serial.print(F("ERR_NO_DATA "));Serial.println(error, HEX);
       return;
     }
+    unsigned long page_address = address + page * 128;
     if (debugMode) {
       char tmpStr[5];
-      Serial.print(F("DEBUG: addr:")); Serial.print(address, HEX); Serial.print(F(" writePage: "));
+      Serial.print(F("DEBUG: addr:")); Serial.print(page_address, HEX); Serial.print(F(" writePage: "));
       // output 128 words (we are using 2 chips each containing a byte) for the page
-      for (unsigned int i = 0; i < 128; i++) {
+      for (unsigned int i = 0; i < 128 * num128Pages; i++) {
         sprintf(tmpStr, "%04X", data[i]);
         Serial.print(tmpStr);
       }
       Serial.println();
     }
-    writeBuffer(address + page * 128, data, 128);
+    writeBuffer(page_address, data, 128 * num128Pages);
     
-    calculated_crc = calc_crc((unsigned char *)data, 128 * sizeof(int), calculated_crc);
+    calculated_crc = calc_crc((unsigned char *)data, 128 * num128Pages * sizeof(int), calculated_crc);
 
     if (debugMode) {
       Serial.print(F("DEBUG: temp CRC: ")); Serial.println(calculated_crc, HEX);
@@ -853,25 +868,25 @@ void outAddressAndData(long addr24bit, int data16bit) {
   // disable buf addr & data OE
   digitalWrite(OUT_BUF_ADDR_OE, HIGH);
   digitalWrite(OUT_BUF_DATA_OE, HIGH);
-  delayMicroseconds(1);
 
   shiftOutAddressAndData(addr24bit, data16bit);
   
   // enble buf addr & data OE
   digitalWrite(OUT_BUF_ADDR_OE, LOW);
   digitalWrite(OUT_BUF_DATA_OE, LOW);
-  delayMicroseconds(1);
 }
 
 void outAddress(long addr24bit) {
   // disable addr & data OE
   digitalWrite(OUT_BUF_ADDR_OE, HIGH);
   digitalWrite(OUT_BUF_DATA_OE, HIGH);
+  delayMicroseconds(1);
 
   shiftOutAddressAndData(addr24bit, 0);
 
   // enable data OE
   digitalWrite(OUT_BUF_ADDR_OE, LOW);
+  delayMicroseconds(1);
 }
 
 void shiftOutAddressAndData(long addr24bit, int data16bit) {
