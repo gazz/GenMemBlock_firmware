@@ -142,9 +142,9 @@ void setup() {
   pinMode(BUS_GEN_ENABLE, OUTPUT);
   pinMode(BUS_DATA_DIR, OUTPUT);
 
-  DeviceID = readDeviceId();
 
-//  enableControl();
+  enableControl();
+  DeviceID = readDeviceId();
 
 //  Serial.begin(57600);
   Serial.begin(baudRate);
@@ -412,11 +412,11 @@ unsigned long loadAddress(int &error, bool alignPageBoundary) {
     Serial.print(F("DEBUG: Got address: 0x"));Serial.println(address, HEX);
   }
 
-//  if (address >= romSize) {
-//    error = ERROR_ADDR_RANGE;
-//    return 0;
-//  }
-//  
+  if (address * 2 >= romSize) {
+    error = ERROR_ADDR_RANGE;
+    return 0;
+  }
+
   Serial.println("ACK_ADDR");
   if (alignPageBoundary) {
     // figure out the page boundary if 
