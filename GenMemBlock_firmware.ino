@@ -5,6 +5,10 @@ const unsigned long baudRate = 500000;
 //const unsigned long baudRate = 19200;
 
 bool debugMode = true;
+bool trace = false;
+
+bool ValidateAddress = false;
+
 int DeviceID = 0;
 
 // 74hc165 control
@@ -95,7 +99,7 @@ void enableControl() {
   
     // output setup
     digitalWrite(OUT_BUF_CLR, HIGH);
-    digitalWrite(OUT_BUF_LATCH, HIGH);
+    digitalWrite(OUT_BUF_LATCH, LOW);
     digitalWrite(OUT_BUF_ADDR_OE, HIGH);
     digitalWrite(OUT_BUF_DATA_OE, HIGH);
     digitalWrite(OUT_ENABLE, LOW);    
@@ -119,17 +123,18 @@ void disableControl() {
   digitalWrite(OUT_BUF_ADDR_OE, HIGH);
   digitalWrite(OUT_BUF_DATA_OE, HIGH);
 
-  digitalWrite(ROM_OE, HIGH);
   digitalWrite(ROM_WE, HIGH);
+  
+  digitalWrite(ROM_CE, HIGH);
+  pinMode(ROM_CE, INPUT_PULLUP);
+
+  digitalWrite(ROM_OE, HIGH);
   pinMode(ROM_OE, INPUT_PULLUP);
-  pinMode(ROM_WE, INPUT_PULLUP);
 
   // input setup
   digitalWrite(IN_SER_PIN, HIGH);
   digitalWrite(IN_LATCH_PIN, HIGH);
   digitalWrite(IN_CLK_PIN, HIGH);
-
-  digitalWrite(ROM_CE, LOW);
 
   digitalWrite(BUS_GEN_ENABLE, LOW);
   enabled = false;
@@ -238,8 +243,8 @@ void loop() {
       case WRITE_128X_PAGES: enableControl(); write128WordXPages(); disableControl(); break;
       case DEBUG_ON: debugMode = true; Serial.println("DEBUG mode ON!"); break;
       case DEBUG_OFF: debugMode = false; Serial.println("DEBUG mode OFF!"); break;
-      case LOCK_ADDRESS: lockAddress(false); break;
-      case LOCK_ADDRESS_AND_DATA: lockAddressAndData(); break;
+      case LOCK_ADDRESS: enableControl(); lockAddress(false); break;
+      case LOCK_ADDRESS_AND_DATA: enableControl(); lockAddressAndData(); break;
       case ENABLE_WRITE_PROTECT: writeProtect(true); break;
       case DISABLE_WRITE_PROTECT: writeProtect(false); break;
       // Sega Genesis
@@ -248,7 +253,7 @@ void loop() {
       case GENESIS_RESET_RELEASE: genesisResetRelease(); break;
 
       // read via cart access
-      case CART_LOCK_ADDRESS: lockAddress(true); break;
+      case CART_LOCK_ADDRESS: disableControl(); lockAddress(true); break;
       case CART_READ_128_PAGE: read128WordPage(true); break;
       case CART_READ_128x128_PAGES: read128x128WordPages(true); break;
       
@@ -334,6 +339,7 @@ void writeProtect(bool enable) {
 }
 
 void outputDeviceId() {
+  DeviceID = readDeviceId();
   byte vendorId = DeviceID >> 8;
   byte chipId = DeviceID & 0xff;
   Serial.print(vendorId, HEX);
@@ -341,6 +347,7 @@ void outputDeviceId() {
 }
 
 void outputDeviceName() {
+  DeviceID = readDeviceId();
   byte vendorId = DeviceID >> 8;
   byte chipId = DeviceID & 0xff;
   if (vendorId == 0xbf && chipId == 0x07) {
@@ -403,7 +410,7 @@ void debugErrorOut(int error) {
 }
 
 unsigned long loadAddress(int &error, bool alignPageBoundary, bool validateChipSize) {
-
+  validateChipSize = ValidateAddress ? validateChipSize : false;
   long romSize = getRomSize(DeviceID);
   
   Serial.println(F("AWAIT_ADDR_HEX"));
@@ -453,6 +460,7 @@ unsigned long loadAddress(int &error, bool alignPageBoundary, bool validateChipS
   }
 
   if (validateChipSize && address * 2 >= romSize) {
+    Serial.println(F("DEBUG: Chip size validation failed"));
     error = ERROR_ADDR_RANGE;
     return 0;
   }
@@ -525,11 +533,13 @@ int loadData(unsigned int *buf, unsigned int bufSize) {
     }
     otherBuf[wordsRead++] = dataWord;
   }
+  if (debugMode) {
+    Serial.println(F("DEBUG: about to ack data"));
+  }
   Serial.println(F("ACK_DATA"));
 
-  memcpy(buf, otherBuf, sizeof(otherBuf));
+  memcpy(buf, otherBuf, bufSize * sizeof(int));
 
-  
   if (debugMode) {
     char tmpStr[5];
 
@@ -630,7 +640,7 @@ void read128WordPage(bool cartRead) {
     Serial.print("DEBUG: device:"); Serial.print(address, HEX); Serial.print(" bytes: "); 
     // output 128 words (we are using 2 chips each containing a byte) for the page
     for (unsigned long i = 0; i < 128; i++) {
-       unsigned int val = cartRead ? in16bitsCart(address + i) : in16bits(address + i);
+      unsigned int val = cartRead ? in16bitsCart(address + i) : in16bits(address + i);
       sprintf(tmpStr, "%04X", val);
       Serial.print(tmpStr);
     }
@@ -660,16 +670,41 @@ void lockAddress(bool cart) {
     return;
   }
 
+
   if (debugMode) {
-    Serial.print(F("DEBUG: Locking at: "));Serial.print(address, HEX);Serial.print(F(", data: "));
-    unsigned int val = cart? in16bitsCart(address) : in16bits(address);
+    Serial.print(F("DEBUG: Locking at: ")); Serial.println(address, HEX);
+  }
+
+//  digitalWrite(TEST_ENABLE, LOW);
+  
+  outAddress(address);
+
+  if (cart) {
+    digitalWrite(BUS_GEN_ENABLE, LOW);
+    digitalWrite(TEST_ENABLE, LOW);
+    if (debugMode) {
+      Serial.println("DEEBUG: pulling bus enable low");
+    }
+  } else {
+    digitalWrite(ROM_CE, LOW);
+    digitalWrite(ROM_OE, LOW);
+  }
+
+  if (debugMode) {
+    // latch & read
+    digitalWrite(IN_LATCH_PIN, LOW);
+    digitalWrite(IN_LATCH_PIN, HIGH);
+    
+    SPI.begin();
+    unsigned int inValue = SPI.transfer16(0);
+    SPI.end();
+
+    Serial.print(F("DEBUG: Locked at: ")); Serial.print(address, HEX); Serial.print(F(", data: "));
     char tmpStr[5];
-    sprintf(tmpStr, "%04X", val);
+    sprintf(tmpStr, "%04X", inValue);
     Serial.println(tmpStr);
   }
 
-  digitalWrite(TEST_ENABLE, LOW);
-  outAddress(address);
 //  digitalWrite(TEST_ENABLE, HIGH);
 
   Serial.println(F("ADDR_LOCKED"));
@@ -677,14 +712,14 @@ void lockAddress(bool cart) {
 
 void lockAddressAndData() {
   int error;
-  unsigned long address = loadAddress(error, false);
+  unsigned long address = loadAddress(error, false, false);
   if (error) {
     debugErrorOut(error);
     Serial.print(F("ERR_NO_ADDR "));Serial.println(error, HEX);
     return;
   }
 
-  unsigned int data = 0;
+  unsigned int data;
   error = loadData(&data, 1);
   if (error) {
     debugErrorOut(error);
@@ -693,18 +728,34 @@ void lockAddressAndData() {
   }
 
   if (debugMode) {
-    Serial.print(F("DEBUG: Locking at: "));Serial.print(address, HEX);Serial.print(F(", data: "));
-    unsigned int val = in16bits(address);
+    Serial.print(F("DEBUG: Locking at: "));Serial.print(address, HEX);Serial.print(F(", data: "));  
+//    unsigned int val = in16bits(address);
     char tmpStr[5];
     sprintf(tmpStr, "%04X", data);
     Serial.println(tmpStr);
   }
 
+  // disable OE on chip
+  digitalWrite(ROM_CE, HIGH);
+  digitalWrite(ROM_OE, HIGH);
+
   outAddressAndData(address, data);
 
-  // disable OE on chip
-  digitalWrite(ROM_CE, LOW);
-  digitalWrite(ROM_OE, HIGH);
+  // read back throught 165
+  digitalWrite(IN_LATCH_PIN, LOW);
+  digitalWrite(IN_LATCH_PIN, HIGH);
+
+  SPI.begin();
+  unsigned int inValue = SPI.transfer16(0);
+  SPI.end();
+
+  if (debugMode) {
+    Serial.print(F("DEBUG: data as seen by 165: "));
+    char tmpStr[5];
+    sprintf(tmpStr, "%04X", inValue);
+    Serial.println(tmpStr);
+  }
+
 
   Serial.println(F("ADDR_AND_DATA_LOCKED"));
 }
@@ -725,7 +776,6 @@ void read128x128WordPages(bool cartRead) {
     Serial.print(F("ERR_NO_ADDR "));Serial.println(error, HEX);
     return;
   }
-
 
   unsigned long pagesToLoad = loadPages(error);
   if (error) {
@@ -748,7 +798,19 @@ void read128x128WordPages(bool cartRead) {
       Serial.print(F("DEBUG: page:"));Serial.print(page);Serial.print(F(", address:"));Serial.println(read_at_address);
     }
   }
-
+  
+  if (debugMode) {
+    char tmpStr[5];
+    Serial.print("DEBUG: device:"); Serial.print(address, HEX); Serial.print(" bytes: "); 
+    // output 128 words (we are using 2 chips each containing a byte) for the page
+    for (unsigned long i = 0; i < 128; i++) {
+       unsigned int val = cartRead ? in16bitsCart(address + i) : in16bits(address + i);
+      sprintf(tmpStr, "%04X", val);
+      Serial.print(tmpStr);
+    }
+    Serial.println();
+  }
+  
   Serial.println(F("DATA_BEGIN"));
 
   unsigned int data[128] = {0};
@@ -1046,32 +1108,64 @@ void outAddress(long addr24bit) {
 }
 
 void shiftOutAddressAndData(long addr24bit, int data16bit) {
-  digitalWrite(OUT_BUF_CLR, LOW);
-
-  // pretty sure clock pulse is needed here for the d-type flip flop that latches reset values in
-  digitalWrite(OUT_BUF_CLK, LOW);
-  digitalWrite(OUT_BUF_CLK, HIGH);
-  digitalWrite(OUT_BUF_CLK, LOW);
-  
-  digitalWrite(OUT_BUF_CLR, HIGH);
-
-  // disable latch as we want all 40 bits to be shifted in befor we do that
-  digitalWrite(OUT_BUF_LATCH, LOW);
 
   // use SPI to shift in data
-  byte addr1 = addr24bit >> 16 & 1;
-  byte addr2 = addr24bit >> 8;
-  byte addr3 = addr24bit;
-  byte data1 = data16bit >> 8;
+  byte addr1 = (addr24bit >> 16) & 0xff;
+  byte addr2 = (addr24bit >> 8) & 0xff;
+  byte addr3 = addr24bit & 0xff;
+  byte data1 = (data16bit >> 8) & 0xff;
   byte data2 = data16bit;
-  SPI.begin();
+
+//  digitalWrite(OUT_BUF_CLR, LOW);
+
+  // pretty sure clock pulse is needed here for the d-type flip flop that latches reset values in
+//  digitalWrite(OUT_BUF_CLK, HIGH);
+//  digitalWrite(OUT_BUF_CLK, LOW);
+//  digitalWrite(OUT_BUF_CLK, HIGH);
+  
+//  digitalWrite(OUT_BUF_CLR, HIGH);
+
+  // disable latch as we want all 40 bits to be shifted in befor we do that
+
+  if (debugMode && trace) {
+    Serial.print("DEBUG:: Addr chunks: 0x");
+    Serial.print(addr1, HEX);
+    Serial.print(addr2, HEX);
+    Serial.print(addr3, HEX);
+    Serial.print(" full:: ");Serial.print(addr24bit, HEX);
+    Serial.println();    
+
+    Serial.print("DEBUG:: Data chunks: 0x");
+    Serial.print(data1, HEX);
+    Serial.print(data2, HEX);
+    Serial.print(" full:: ");Serial.print(data16bit, HEX);
+    Serial.println();    
+  }
+
+  // new board had 595s wired other way around so data bytes have to be swapped
   byte buf[5] = {data1, data2, addr1, addr2, addr3};
+  
+//  SPI.transfer(buf, 5);
+//  addr1 = addr2 = addr3 = 0;
+//  byte buf[3] = {addr1, addr2, addr3};
+//  byte buf[3] = {addr1, addr2, addr3};
+
+  PORTD |= B00010000;
+  delayMicroseconds(1);
+  PORTD = PORTD & B11101111;
+
+  SPI.begin();
+  SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE3));
   SPI.transfer(buf, 5);
+  SPI.endTransaction();
   SPI.end();
 
+//  shiftOut(11, 13, MSBFIRST, addr3);
+
   // pulse latch
-  digitalWrite(OUT_BUF_LATCH, HIGH);
-  digitalWrite(OUT_BUF_LATCH, LOW);
+  PORTD |= B00010000;
+  delayMicroseconds(1);
+  PORTD = PORTD & B11101111;  
 }
 
 unsigned int in16bits(long addr24bit) {
@@ -1090,26 +1184,24 @@ unsigned int in16bits(long addr24bit) {
   unsigned int inValue = SPI.transfer16(0);
   SPI.end();
 
-  return inValue;
+  unsigned int outValue = ((inValue & 0xff) << 8) + (inValue >> 8);
+  return outValue;
 }
 
 unsigned int in16bitsCart(long addr24bit) {
-  // enable output on ROM
   digitalWrite(OUT_BUF_DATA_OE, HIGH); // avoid bus fighting
+  digitalWrite(OUT_BUF_ADDR_OE, HIGH);
+  
   digitalWrite(TEST_ENABLE, LOW);
 
   outAddress(addr24bit);
 
-//  digitalWrite(ROM_CE, LOW);
-//  digitalWrite(ROM_OE, LOW);
+  // enable output on ROM
+  digitalWrite(ROM_CE, LOW);
+  digitalWrite(ROM_OE, LOW);
 
   digitalWrite(IN_LATCH_PIN, LOW);
-//  delay(1);
   digitalWrite(IN_LATCH_PIN, HIGH);
-
-  // we have already latched in data
-  digitalWrite(OUT_BUF_ADDR_OE, HIGH);
-//  delay(1);
 
   SPI.begin();
   unsigned int inValue = SPI.transfer16(0);
