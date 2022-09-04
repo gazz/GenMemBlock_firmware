@@ -1,0 +1,24 @@
+power: GND/+5V
+SPI: SER_MOSI, SER_MISO, SER_CLK (11, 12, 13) => 3 pins
+
+shifted control lines:
+[0:ROM_CE# 1:ROM_OE# 2:ROM_WE# 3:595_ADDR_OE# 4:595_DATA_OE# 5:TX_ENABLE# 6:GEN_RESET# 7:SDCARD_CS#]
+
+maybe standalone:
+595_LATCH#, 165_LD# (4, A0)
+CNTR_LATCH#, CNTR_OE# (TBD, TBD)
+
+
+ALL_BITS = b11111111
+
+## Case 1 - Read rom
+CNTR_OE# is tied to ground, shiftregister outputs are pulled high via 10k resistor array
+1) SPI write b11111111; blip CNTR_LATCH#
+2) SPI write [24 bit address; 16 bit data]; blip 595_LATCH#
+3) SPI write b00101111; blip CNTR_LATCH#
+4) blip 165_LD#
+5) SPI read 16bits
+6) SPI write b11111111; blip CNTR_LATCH#
+
+## Case 2 - Write rom
+
