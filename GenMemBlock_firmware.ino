@@ -26,7 +26,7 @@ int ROM_CH = 0,
   SD_CH = 2;
 
 // Direct Control
-int SPI_ADDR0 = 2;
+int SPI_ADDR0 = 7;
 int SPI_ADDR1 = 3;
 int CNTR_SR595_LATCH = 4;
 int CNTR_SR595_OE = 5;
@@ -45,6 +45,7 @@ Metrics metrics;
 // line buffer control
 int TEST_ENABLE = A5; // not used for now
 int SR595_LD = 6;
+int PIN_ROM_WE = 8;
 
 void selectSPIChannel(int channel) {
   PORTD = (channel & 0b01) ? PORTD | (1 << SPI_ADDR0) : PORTD &~ (1 << SPI_ADDR0);
@@ -168,11 +169,23 @@ void readDummyToResetRom() {
   }
 }
 
+int interruptReceived = 0;
+
+void genInterrupt() {
+  interruptReceived = 1;
+  digitalWrite(9, HIGH);
+  pinMode(9, OUTPUT);
+}
 
 void setup() {
 
   Serial.begin(baudRate);
   Serial.println();
+
+  // set up interrupt
+  const int intPin = 2;
+  pinMode(intPin, INPUT);
+  attachInterrupt(digitalPinToInterrupt(intPin), genInterrupt, RISING);
 
   pinMode(SPI_ADDR0, OUTPUT);
   pinMode(SPI_ADDR1, OUTPUT);
@@ -185,6 +198,9 @@ void setup() {
 
   digitalWrite(SR595_LD, LOW);
   pinMode(SR595_LD, OUTPUT);
+
+  digitalWrite(PIN_ROM_WE, HIGH);
+  pinMode(PIN_ROM_WE, OUTPUT);
 
   controlOut(0xff, true, true);
   
@@ -205,6 +221,8 @@ void setup() {
 
   enableControl();
 
+  initBootup();
+
   Serial.print(F("Available actions: 0.."));Serial.println(UNKNOWN_ACTION - 1);
 //  Serial.print("EEPROM: ");
 //  outputDeviceName();
@@ -214,6 +232,7 @@ void setup() {
 
   disableControl();
 
+  // load default boot rom in SRAM
   genesisReset();
 }
 
@@ -256,6 +275,13 @@ int parseAction(String stringAction) {
 
 void loop() {
 
+  if (interruptReceived) {
+    Serial.println("Interrupt called");
+    delay(1000);
+    pinMode(9, INPUT);
+    interruptReceived = 0;
+  }
+  
   if (Serial.available() > 0) {
 
     String input = Serial.readStringUntil('\n');
@@ -298,7 +324,7 @@ void loop() {
       case CART_READ_128x128_PAGES: read128x128WordPages(true); break;
 
       case LIST_SD_FILES: listSDFiles(); break;
-      case FLASH_SD_ROM: enableControl(); flashAndStartROM(); disableControl(); genesisReset(); break;
+      case FLASH_SD_ROM: enableControl(); flashAndStartROM(NULL); disableControl(); genesisReset(); break;
       
       // Invalid action
       case UNKNOWN_ACTION: Serial.println(F("UNKNOWN_ACTION")); break;
@@ -347,6 +373,35 @@ void genesisResetRelease() {
   Serial.println(F("ACK_GENESIS"));
 }
 
+void initBootup() {
+  // check if SRAM contains GENESIS ROM
+
+  // load default ROM if not found (POWER ON)
+
+  int base = 0x80;
+//  outAddress(address);
+  int value = in16bits(base);
+  if (debugMode) {
+    int value1 = in16bits(base + 1);
+    int value2 = in16bits(base + 2);
+    int value3 = in16bits(base + 3);
+    Serial.print("DEBUG: initCheck: ");
+    Serial.print(value, HEX);Serial.print(":");
+    Serial.print(value1, HEX);Serial.print(":");
+    Serial.print(value2, HEX);Serial.print(":");
+    Serial.print(value3, HEX);
+    Serial.println(", expected: 5345");
+  }
+  if (value != 0x5345) {
+    Serial.println("DEBUG: Loading bootrom...");
+    flashAndStartROM("_BOOT.MD");
+    delay(100);
+  } else {
+    Serial.println("DEBUG: Genesys rom found, booting...");
+  }
+  
+}
+
 // ********************************
 // ********************************
 // ********************************
@@ -364,7 +419,7 @@ void listSDFiles() {
   Serial.println("ACK");
 }
 
-bool printDirectory(File dir)               // lists the files and filesize on the SD card (only root)
+bool printDirectory(File dir, String prefix)               // lists the files and filesize on the SD card (only root)
 {
   while (true) {
     File entry =  dir.openNextFile();
@@ -372,13 +427,23 @@ bool printDirectory(File dir)               // lists the files and filesize on t
       // no more files
       return false;
     }
-    if (String(entry.name()).indexOf(".MD") > 0) {
-      char romName[32];
+
+    if (entry.isDirectory()) {
+      Serial.print(entry.name());
+      Serial.println("/");
+      printDirectory(entry, String(entry.name()) + "/");
+    }
+    else if (String(entry.name()).indexOf(".MD") > 0) {
+      char romName[25];
       entry.seek(0x150);
-      entry.read(romName, 32);
-      
+      entry.read(romName, 24);
+      romName[24] = '\0';
+
+      Serial.print(prefix);
+      Serial.print(entry.name());
+      Serial.print(F(" | "));
       Serial.print(romName);
-      Serial.print(F("\t"));
+      Serial.print(F(" | "));
       Serial.println(entry.size(), DEC);
     }
 
@@ -388,56 +453,99 @@ bool printDirectory(File dir)               // lists the files and filesize on t
   return true;
 }
 
-void flashAndStartROM() {
-  
-  int error;
-  unsigned long targetIndex = loadAddress(error, false, false);
+bool printDirectory(File dir) {
+  printDirectory(dir, "");
+}
 
-  if (error) {
-    debugErrorOut(error);
-    Serial.print(F("ERR_NO_ADDR "));Serial.println(error, HEX);
+void flashAndStartROM(char *inFilename) {
+
+  unsigned long action_start = micros();
+
+  unsigned long read_start = micros();
+
+
+  char filename[32];
+  memset(filename, 0, sizeof(filename));
+  if (!inFilename) {
+    int error = loadStringLine(filename, 32);
+    if (error) {
+      debugErrorOut(error);
+      Serial.print(F("ERR_NO_FILENAME "));Serial.println(error, HEX);
+      return;
+    }
+  }
+
+  String targetRom = String(inFilename ? inFilename : filename);
+
+  if (debugMode) {
+    Serial.print(F("DEBUG: Target file: "));Serial.println(targetRom);
+  }
+
+//  unsigned long read_start = micros();
+
+  selectSPIChannel(SD_CH);
+  SD.begin();
+  File file = SD.open(targetRom);
+  if (!file) {
+    if (debugMode) {
+      Serial.println(F("DEBUG: Bailing as the file doesn't exist"));
+    }
     return;
   }
 
-  Serial.print("DEBUG: Target index: ");Serial.println(targetIndex);
-  
-  selectSPIChannel(SD_CH);
-  SD.begin();
-  File root = SD.open("/");
-  int currentIndex = 0;
-  while (true) {
-    File entry = root.openNextFile();
-    if (!entry) break;
-    if (targetIndex != currentIndex++) continue;
-
-    char romName[32];
-    entry.seek(0x150);
-    entry.read(romName, 32);
-
-    Serial.print("DEBUG: Flashing ROM: "); Serial.print(entry.name()); Serial.println(romName);
-
-    int pageSize = 128;
-    int pages = entry.size() / pageSize / 2;
-    int buf[pageSize];
-    for (int i = 0 ; i < pages; i++) {
-      selectSPIChannel(SD_CH);
-      unsigned long address = i * pageSize;
-      entry.seek(i * pageSize * 2);
-      entry.read(buf, pageSize * 2);
-
-      Serial.print("Writing page: ");Serial.print(i);Serial.print(", at addr: ");Serial.println(address, HEX);
-      writeBuffer(address, buf, pageSize, true, true);
-    }
-
-    // read page by page and write to file
-//    int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess)
-
-
-    break;
+  if (debugMode) {
+    Serial.print(F("DEBUG: File: "));Serial.print(file.name());Serial.print("|");Serial.println(file.size());
   }
 
-  root.close();
+  char romName[24];
+  file.seek(0x150);
+  file.read(romName, 24);
+  file.seek(0);
+
+  metrics.bytesReceive += micros() - read_start;
+
+  if (debugMode) {
+    Serial.print(F("DEBUG: Flashing ROM: ")); Serial.print(file.name()); Serial.print(" : "); Serial.println(romName);
+  }
+
+  int pageSize = 128;
+  int pages = file.size() / pageSize / 2;
+  int buf[pageSize];
+  for (int i = 0 ; i < pages; i++) {
+
+    read_start = micros();
+    
+    selectSPIChannel(SD_CH);
+    
+    unsigned long address = i * pageSize;
+//    file.seek(address * 2);
+    file.read(buf, pageSize * 2);
+  
+    metrics.bytesReceive += micros() - read_start;
+
+    if (i%16==0) {
+      Serial.print("Writing page: ");Serial.print(i);Serial.print(", at addr: ");Serial.print(address, HEX);
+      Serial.print(", of pages: "); Serial.println(pages);
+    }
+
+    writeBuffer(address, buf, pageSize, true, true);
+  }
+
+  // read page by page and write to file
+//    int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess)
+
+  file.close();
+  metrics.action = micros() - action_start;
+  
   Serial.println("ACK");
+
+  Serial.print("Control:");Serial.print(metrics.control);Serial.print("|");
+  Serial.print("Read:");Serial.print(metrics.bytesReceive);Serial.print("|");
+  Serial.print("Write:");Serial.print(metrics.bufferWrite);Serial.print("|");
+//  Serial.print("PARSE:");Serial.print(metrics.parseBytes);Serial.print("|");
+//  Serial.print("COPY:");Serial.print(metrics.copyIncomingBuf);Serial.print("|");
+  Serial.print("Action:");Serial.print(metrics.action);Serial.print("|");
+  Serial.println();
 }
 
 // ********************************
@@ -563,6 +671,24 @@ void debugErrorOut(int error) {
   }
 }
 
+int loadStringLine(char *buf, int maxLength) {
+  Serial.println(F("AWAIT_STR"));
+  int error = SUCCESS;
+  long start = millis();
+  while (Serial.available() == 0) {
+    if (millis() - start > 3000) {
+      error = ERROR_TIMEOUT;
+      Serial.println(F("DEBUG: loadAddress TIMEOUT, bailing"));
+      return;
+    }
+  }
+
+  Serial.readBytesUntil('\n', buf, maxLength);
+  Serial.println("ACK_STR");
+
+  return SUCCESS;
+}
+
 unsigned long loadAddress(int &error, bool alignPageBoundary, bool validateChipSize) {
   validateChipSize = ValidateAddress ? validateChipSize : false;
   long romSize = getRomSize(DeviceID);
@@ -573,7 +699,7 @@ unsigned long loadAddress(int &error, bool alignPageBoundary, bool validateChipS
   // wait for 3 secs for address or bail with an error
   long start = millis();
   while (Serial.available() == 0) {
-    if (millis() - start > 13000) {
+    if (millis() - start > 3000) {
       error = ERROR_TIMEOUT;
       Serial.println(F("DEBUG: loadAddress TIMEOUT, bailing"));
       return;
@@ -1211,8 +1337,8 @@ void write128WordXPages(bool hex) {
   Serial.print("CNTR:");Serial.print(metrics.control);Serial.print("|");
   Serial.print("RCV:");Serial.print(metrics.bytesReceive);Serial.print("|");
   Serial.print("WRT:");Serial.print(metrics.bufferWrite);Serial.print("|");
-  Serial.print("PARSE:");Serial.print(metrics.parseBytes);Serial.print("|");
-  Serial.print("COPY:");Serial.print(metrics.copyIncomingBuf);Serial.print("|");
+//  Serial.print("PARSE:");Serial.print(metrics.parseBytes);Serial.print("|");
+//  Serial.print("COPY:");Serial.print(metrics.copyIncomingBuf);Serial.print("|");
   Serial.print("TOTAL:");Serial.print(metrics.action);Serial.print("|");
   Serial.println();
 }
@@ -1289,8 +1415,8 @@ int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess, b
     Serial.println();
   }
 
-  controlOut(F_ROM_OE | F_ROM_WE | F_SRA_OE | F_SRD_OE, true, false);
-  controlOut(F_ROM_CE, false, true);
+  controlOut(F_ROM_OE | F_ROM_WE, true, false);
+  controlOut(F_SRA_OE | F_SRD_OE | F_ROM_CE, false, true);
 
   for (unsigned long i = 0; i < bufferSize; i++) {
     unsigned long target_address = addr24bit + i;
@@ -1300,12 +1426,12 @@ int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess, b
 
     shiftOutAddressAndData(target_address, flipBytes ? flipIntBytes(buffer[i]) : buffer[i]);
 
-/*
-    controlOut(F_SRA_OE | F_SRD_OE, false, true);
-    controlOut(F_ROM_WE, false, true);
-*/
-    controlOut(F_ROM_WE | F_SRA_OE | F_SRD_OE, false, true);
-    controlOut(F_ROM_WE | F_SRA_OE | F_SRD_OE, true, true);
+//    controlOut(F_ROM_WE, false, true);
+//    controlOut(F_ROM_WE, true, true);
+
+    // we have PORTB pins are offset by 8
+    PORTB |= 1 << (8 - PIN_ROM_WE);
+    PORTB &= ~(1 << (8 - PIN_ROM_WE));
 
     if (true) {
       continue;
@@ -1467,7 +1593,7 @@ unsigned int in16bits(long addr24bit) {
   SPI.end();
 
   unsigned int outValue = ((inValue & 0xff) << 8) + (inValue >> 8);
-  return outValue;
+  return outValue & 0xffff;
 }
 
 unsigned int in16bitsCart(long addr24bit) {
