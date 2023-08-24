@@ -288,8 +288,6 @@ Entry Wire Line
 	2750 3700 2850 3600
 Entry Wire Line
 	2750 3800 2850 3700
-Text Label 700  1100 0    50   ~ 0
-DO_OE
 Text Label 2600 1200 0    50   ~ 0
 GND
 Text Label 2600 1400 0    50   ~ 0
@@ -1926,15 +1924,13 @@ AI_OE
 Text Label 9350 4450 0    50   ~ 0
 CTRL_OE
 Text Label 9350 4250 0    50   ~ 0
-DO_OE
+DG_CE#
 Text GLabel 9300 4450 0    50   Input ~ 0
 TX_ENABLE#
 Text Label 2600 3800 0    50   ~ 0
 GND
 Text Label 700  3800 0    50   ~ 0
 DO_OE
-Text Label 700  1300 0    50   ~ 0
-GND
 Text Label 2600 1300 0    50   ~ 0
 VCC
 $Comp
@@ -1973,8 +1969,6 @@ Text Label 6100 4750 0    50   ~ 0
 QH_165
 Text Label 7600 4750 0    50   ~ 0
 GND
-Text Label 7500 2700 0    50   ~ 0
-VCC
 $Comp
 L power:GND #PWR0114
 U 1 1 61D44FC6
@@ -3199,7 +3193,6 @@ Text Label 14300 4900 0    50   ~ 0
 GEN_CE#
 Text Label 14300 4800 0    50   ~ 0
 GEN_OE#
-NoConn ~ 14250 5000
 NoConn ~ 14250 5100
 NoConn ~ 14250 5200
 Entry Wire Line
@@ -3360,6 +3353,20 @@ Wire Wire Line
 	9300 4150 9300 4250
 Wire Wire Line
 	9300 4250 9750 4250
+Text Label 9350 4150 0    50   ~ 0
+GEN_CE#
+Entry Wire Line
+	14900 5000 15000 5100
+Text Label 14300 5000 0    50   ~ 0
+GEN_WE#
+Wire Wire Line
+	14250 5000 14900 5000
+Text Label 700  1100 0    50   ~ 0
+DO_OE
+Text Label 700  1300 0    50   ~ 0
+GND
+Text Label 7500 2700 0    50   ~ 0
+GEN_WE#
 Wire Bus Line
 	5950 6450 7300 6450
 Wire Bus Line
@@ -3375,19 +3382,19 @@ Wire Bus Line
 Wire Bus Line
 	11050 5150 11050 6150
 Wire Bus Line
+	14250 5550 14250 6050
+Wire Bus Line
+	11950 100  11950 4500
+Wire Bus Line
 	9850 4600 10450 4600
 Wire Bus Line
 	9150 5150 9150 6450
 Wire Bus Line
 	2550 4550 2550 5650
 Wire Bus Line
-	14250 5550 14250 6050
-Wire Bus Line
-	11950 100  11950 4500
+	600  950  600  1500
 Wire Bus Line
 	600  3600 600  4150
-Wire Bus Line
-	600  950  600  1500
 Wire Bus Line
 	4150 6650 4150 7650
 Wire Bus Line
@@ -3438,6 +3445,4 @@ Wire Bus Line
 	5450 1200 5450 3900
 Wire Bus Line
 	15000 100  15000 5550
-Text Label 9350 4150 0    50   ~ 0
-GEN_CE#
 $EndSCHEMATC

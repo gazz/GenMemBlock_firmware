@@ -1249,12 +1249,12 @@ $EndComp
 $Comp
 L power:GND #PWR0107
 U 1 1 6515AB13
-P 10350 4950
-F 0 "#PWR0107" H 10350 4700 50  0001 C CNN
-F 1 "GND" H 10450 4800 50  0000 R CNN
-F 2 "" H 10350 4950 50  0001 C CNN
-F 3 "" H 10350 4950 50  0001 C CNN
-	1    10350 4950
+P 10300 4800
+F 0 "#PWR0107" H 10300 4550 50  0001 C CNN
+F 1 "GND" H 10400 4650 50  0000 R CNN
+F 2 "" H 10300 4800 50  0001 C CNN
+F 3 "" H 10300 4800 50  0001 C CNN
+	1    10300 4800
 	1    0    0    -1  
 $EndComp
 Text GLabel 9750 5850 0    50   Input ~ 0
@@ -1785,9 +1785,7 @@ F 3 "" H 9550 2000 50  0001 C CNN
 $EndComp
 Text Label 9550 2100 0    50   ~ 0
 VCC
-Entry Wire Line
-	10350 4700 10450 4600
-Text Label 10350 4800 0    50   ~ 0
+Text Label 10300 4800 0    50   ~ 0
 GND
 $Comp
 L power:GND #PWR0113
@@ -1923,19 +1921,13 @@ F 3 "~" H 9050 3650 50  0001 C CNN
 $EndComp
 Text Label 1850 4650 0    50   ~ 0
 VCC
-Entry Wire Line
-	9750 4150 9850 4250
-Entry Wire Line
-	9750 4300 9850 4400
-Text Label 9350 4150 0    50   ~ 0
+Text Label 9350 4350 0    50   ~ 0
 AI_OE
-Text Label 9350 4300 0    50   ~ 0
-CTRL_OE
-Entry Wire Line
-	9750 4450 9850 4550
 Text Label 9350 4450 0    50   ~ 0
-DO_OE
-Text GLabel 9300 4300 0    50   Input ~ 0
+CTRL_OE
+Text Label 9350 4250 0    50   ~ 0
+DG_CE#
+Text GLabel 9300 4450 0    50   Input ~ 0
 TX_ENABLE#
 Text Label 2600 3800 0    50   ~ 0
 GND
@@ -1982,7 +1974,7 @@ QH_165
 Text Label 7600 4750 0    50   ~ 0
 GND
 Text Label 7500 2700 0    50   ~ 0
-VCC
+GEN_WE#
 $Comp
 L power:GND #PWR0114
 U 1 1 61D44FC6
@@ -2789,8 +2781,6 @@ Wire Wire Line
 Wire Wire Line
 	9550 2150 9550 2000
 Wire Wire Line
-	10350 4950 10350 4700
-Wire Wire Line
 	8300 3950 8650 3950
 Connection ~ 9100 3950
 Wire Wire Line
@@ -2849,16 +2839,12 @@ Wire Wire Line
 Wire Wire Line
 	8400 3550 8700 3550
 Wire Wire Line
-	9750 4150 9300 4150
+	9750 4350 9300 4350
 Wire Wire Line
-	9300 4150 9300 4300
+	9300 4350 9300 4450
 Wire Wire Line
-	9300 4300 9750 4300
-Wire Wire Line
-	9750 4450 9300 4450
-Wire Wire Line
-	9300 4450 9300 4300
-Connection ~ 9300 4300
+	9300 4450 9750 4450
+Connection ~ 9300 4450
 Wire Wire Line
 	10550 3300 10550 3650
 Wire Wire Line
@@ -2886,19 +2872,16 @@ DATA_BUS
 $Comp
 L Device:R R3
 U 1 1 622C1781
-P 9450 4950
-F 0 "R3" V 9243 4950 50  0000 C CNN
-F 1 "10K" V 9334 4950 50  0000 C CNN
-F 2 "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder" V 9380 4950 50  0001 C CNN
-F 3 "~" H 9450 4950 50  0001 C CNN
-	1    9450 4950
+P 9450 4800
+F 0 "R3" V 9243 4800 50  0000 C CNN
+F 1 "10K" V 9334 4800 50  0000 C CNN
+F 2 "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder" V 9380 4800 50  0001 C CNN
+F 3 "~" H 9450 4800 50  0001 C CNN
+	1    9450 4800
 	0    1    1    0   
 $EndComp
 Wire Wire Line
-	9300 4450 9300 4950
-Connection ~ 9300 4450
-Wire Wire Line
-	9600 4950 10350 4950
+	9600 4800 10300 4800
 Wire Bus Line
 	11950 100  15000 100 
 $Comp
@@ -3216,7 +3199,6 @@ Text Label 14300 4900 0    50   ~ 0
 GEN_CE#
 Text Label 14300 4800 0    50   ~ 0
 GEN_OE#
-NoConn ~ 14250 5000
 NoConn ~ 14250 5100
 NoConn ~ 14250 5200
 Entry Wire Line
@@ -3356,7 +3338,35 @@ Text Label 600  4150 0    50   ~ 0
 CART_BUS
 Text Label 600  950  0    50   ~ 0
 CART_BUS
-Connection ~ 10350 4950
+Entry Wire Line
+	10300 4700 10400 4600
+Wire Wire Line
+	10300 4700 10300 4800
+Connection ~ 10300 4800
+Wire Wire Line
+	9300 4450 9300 4800
+Entry Wire Line
+	9750 4450 9850 4550
+Entry Wire Line
+	9750 4350 9850 4450
+Entry Wire Line
+	9750 4250 9850 4350
+Entry Wire Line
+	9750 4150 9850 4250
+Wire Wire Line
+	9750 4150 9300 4150
+Wire Wire Line
+	9300 4150 9300 4250
+Wire Wire Line
+	9300 4250 9750 4250
+Text Label 9350 4150 0    50   ~ 0
+GEN_CE#
+Entry Wire Line
+	14900 5000 15000 5100
+Text Label 14300 5000 0    50   ~ 0
+GEN_WE#
+Wire Wire Line
+	14250 5000 14900 5000
 Wire Bus Line
 	5950 6450 7300 6450
 Wire Bus Line
@@ -3372,25 +3382,25 @@ Wire Bus Line
 Wire Bus Line
 	11050 5150 11050 6150
 Wire Bus Line
-	9850 4600 10450 4600
+	14250 5550 14250 6050
 Wire Bus Line
-	9850 3200 9850 4600
+	11950 100  11950 4500
+Wire Bus Line
+	9850 4600 10450 4600
 Wire Bus Line
 	9150 5150 9150 6450
 Wire Bus Line
 	2550 4550 2550 5650
 Wire Bus Line
-	14250 5550 14250 6050
-Wire Bus Line
-	11950 100  11950 4500
+	600  950  600  1500
 Wire Bus Line
 	600  3600 600  4150
-Wire Bus Line
-	600  950  600  1500
 Wire Bus Line
 	4150 6650 4150 7650
 Wire Bus Line
 	3350 5650 3350 6650
+Wire Bus Line
+	9850 3200 9850 4600
 Wire Bus Line
 	9850 3200 10700 3200
 Wire Bus Line
