@@ -247,7 +247,7 @@ Entry Wire Line
 Text Label 700  3500 0    50   ~ 0
 GND
 Text Label 2600 3600 0    50   ~ 0
-VCC
+GEN_CE#
 Text Label 700  3700 0    50   ~ 0
 GND
 Entry Wire Line
@@ -263,7 +263,7 @@ GND
 Text Label 700  1200 0    50   ~ 0
 GND
 Text Label 2600 1100 0    50   ~ 0
-GND
+GEN_WE#
 Entry Wire Line
 	2750 1100 2850 1000
 Entry Wire Line
@@ -289,7 +289,7 @@ Entry Wire Line
 Entry Wire Line
 	2750 3800 2850 3700
 Text Label 700  1100 0    50   ~ 0
-DO_OE
+GEN_OE#
 Text Label 2600 1200 0    50   ~ 0
 GND
 Text Label 2600 1400 0    50   ~ 0
@@ -305,7 +305,7 @@ VCC
 Text Label 2600 3500 0    50   ~ 0
 GND
 Text Label 700  3600 0    50   ~ 0
-GND
+GEN_CE#
 Text Label 2600 3700 0    50   ~ 0
 GND
 Text Label 2150 4850 0    50   ~ 0
@@ -1228,7 +1228,6 @@ Text Label 10350 5650 0    50   ~ 0
 595_LATCH#
 Text GLabel 10250 5750 2    50   Input ~ 0
 ROM_CE#
-NoConn ~ 10250 5850
 Text GLabel 10250 6050 2    50   Input ~ 0
 GEN_RESET#
 Text GLabel 10250 6150 2    50   Input ~ 0
@@ -1736,7 +1735,6 @@ Entry Wire Line
 Entry Wire Line
 	10300 3200 10400 3100
 NoConn ~ 9950 3650
-NoConn ~ 10050 3650
 NoConn ~ 9950 4150
 NoConn ~ 10050 4150
 NoConn ~ 10250 3650
@@ -1925,18 +1923,16 @@ Text Label 9350 4350 0    50   ~ 0
 AI_OE
 Text Label 9350 4450 0    50   ~ 0
 CTRL_OE
-Text Label 9350 4250 0    50   ~ 0
-DO_OE
 Text GLabel 9300 4450 0    50   Input ~ 0
 TX_ENABLE#
 Text Label 2600 3800 0    50   ~ 0
-GND
+GEN_WE#
 Text Label 700  3800 0    50   ~ 0
-DO_OE
+GEN_OE#
 Text Label 700  1300 0    50   ~ 0
-GND
+GEN_CE#
 Text Label 2600 1300 0    50   ~ 0
-VCC
+GEN_CE#
 $Comp
 L Connector_Generic:Conn_02x10_Odd_Even J6
 U 1 1 64C2291D
@@ -1974,7 +1970,7 @@ QH_165
 Text Label 7600 4750 0    50   ~ 0
 GND
 Text Label 7500 2700 0    50   ~ 0
-VCC
+GEN_WE#
 $Comp
 L power:GND #PWR0114
 U 1 1 61D44FC6
@@ -3199,7 +3195,6 @@ Text Label 14300 4900 0    50   ~ 0
 GEN_CE#
 Text Label 14300 4800 0    50   ~ 0
 GEN_OE#
-NoConn ~ 14250 5000
 NoConn ~ 14250 5100
 NoConn ~ 14250 5200
 Entry Wire Line
@@ -3243,72 +3238,14 @@ Wire Wire Line
 	10850 4150 10850 4600
 Text Label 10850 4600 1    50   ~ 0
 S_RESET#
-$Comp
-L Connector_Generic:Conn_02x04_Odd_Even J8
-U 1 1 620DA531
-P 13450 5750
-F 0 "J8" H 13500 6067 50  0000 C CNN
-F 1 "Conn_02x04_Odd_Even" H 13500 5976 50  0000 C CNN
-F 2 "Connector_PinHeader_2.54mm:PinHeader_2x04_P2.54mm_Vertical" H 13450 5750 50  0001 C CNN
-F 3 "~" H 13450 5750 50  0001 C CNN
-	1    13450 5750
-	1    0    0    -1  
-$EndComp
-Wire Wire Line
-	13250 5950 13150 5950
-Wire Wire Line
-	13150 5950 13150 5850
-Wire Wire Line
-	13250 5750 13150 5750
-Wire Wire Line
-	13250 5850 13150 5850
-Connection ~ 13150 5850
-Wire Wire Line
-	13150 5850 13150 5750
-Wire Wire Line
-	13150 5750 13050 5750
-Connection ~ 13150 5750
-Text GLabel 13050 5750 0    50   Input ~ 0
+Text GLabel 13750 5850 0    50   Input ~ 0
 GEN_RESET#
-Wire Wire Line
-	13750 5950 14150 5950
-Text Label 13750 5950 0    50   ~ 0
-S_RESET#
 Text Label 13750 5850 0    50   ~ 0
 H_RESET#
-Text Label 13750 5750 0    50   ~ 0
-RESET#
-Wire Wire Line
-	13750 5650 14150 5650
-Wire Wire Line
-	13750 5750 14150 5750
 Wire Wire Line
 	13750 5850 14150 5850
-Entry Wire Line
-	14150 5950 14250 6050
-Entry Wire Line
-	14150 5850 14250 5950
-Entry Wire Line
-	14150 5750 14250 5850
-Entry Wire Line
-	14150 5650 14250 5750
 Wire Bus Line
 	14250 5550 15000 5550
-Text Label 13750 5650 0    50   ~ 0
-DTACK#
-Wire Wire Line
-	13250 5650 12850 5650
-$Comp
-L power:+5V #PWR0101
-U 1 1 626A5866
-P 12850 5650
-F 0 "#PWR0101" H 12850 5500 50  0001 C CNN
-F 1 "+5V" H 12865 5823 50  0000 C CNN
-F 2 "" H 12850 5650 50  0001 C CNN
-F 3 "" H 12850 5650 50  0001 C CNN
-	1    12850 5650
-	1    0    0    -1  
-$EndComp
 $Comp
 L power:+5V #PWR0116
 U 1 1 626A7824
@@ -3351,15 +3288,27 @@ Entry Wire Line
 Entry Wire Line
 	9750 4350 9850 4450
 Entry Wire Line
-	9750 4250 9850 4350
+	14900 5000 15000 5100
+Wire Wire Line
+	14900 5000 14250 5000
+Text Label 14300 5000 0    50   ~ 0
+GEN_WE#
 Entry Wire Line
-	9750 4150 9850 4250
+	10050 3300 10150 3200
 Wire Wire Line
-	9750 4150 9300 4150
+	10050 3300 10050 3650
+Text Label 10050 3650 1    50   ~ 0
+GEN_WE#
+Entry Wire Line
+	14150 5850 14250 5950
+Text GLabel 10250 5850 2    50   Input ~ 0
+DTACK#
+Entry Wire Line
+	14150 5650 14250 5750
+Text GLabel 13750 5650 0    50   Input ~ 0
+DTACK#
 Wire Wire Line
-	9300 4150 9300 4250
-Wire Wire Line
-	9300 4250 9750 4250
+	13750 5650 14150 5650
 Wire Bus Line
 	5950 6450 7300 6450
 Wire Bus Line
@@ -3375,13 +3324,15 @@ Wire Bus Line
 Wire Bus Line
 	11050 5150 11050 6150
 Wire Bus Line
+	9850 3200 9850 4600
+Wire Bus Line
+	14250 5550 14250 6050
+Wire Bus Line
 	9850 4600 10450 4600
 Wire Bus Line
 	9150 5150 9150 6450
 Wire Bus Line
 	2550 4550 2550 5650
-Wire Bus Line
-	14250 5550 14250 6050
 Wire Bus Line
 	11950 100  11950 4500
 Wire Bus Line
@@ -3392,8 +3343,6 @@ Wire Bus Line
 	4150 6650 4150 7650
 Wire Bus Line
 	3350 5650 3350 6650
-Wire Bus Line
-	9850 3200 9850 4600
 Wire Bus Line
 	9850 3200 10700 3200
 Wire Bus Line
@@ -3438,6 +3387,6 @@ Wire Bus Line
 	5450 1200 5450 3900
 Wire Bus Line
 	15000 100  15000 5550
-Text Label 9350 4150 0    50   ~ 0
-GEN_CE#
+Text Label 13750 5650 0    50   ~ 0
+DTACK#
 $EndSCHEMATC
