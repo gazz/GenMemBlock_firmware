@@ -1,36 +1,63 @@
 #include <SPI.h>
 #include <SD.h>
 
+// #define INCLUDE_METRICS
+#define DEBUG_BUILD
+
 const unsigned long baudRate = 500000;
-//const unsigned long baudRate = 115200;
+// const unsigned long baudRate = 115200;
 //const unsigned long baudRate = 19200;
 
-bool debugMode = true;
-bool trace = false;
+bool debugMode =  true;
+#define trace false
 
-bool ValidateAddress = false;
+#define FlashPageSize 64
 
-int DeviceID = 0;
+#define F_SRA_OE 1
+#define F_GEN_RES (1 << 1)
+#define F_ROM_CE (1 << 3)
+#define F_GEN_TX_EN (1 << 4)
+#define F_SRD_OE (1 << 5)
+#define F_ROM_OE (1 << 6)
+#define F_SL165_LD (1 << 7)
 
-int F_SRA_OE = 1,
-  F_GEN_RES = 1 << 1,
-  F_ROM_WE = 1 << 2,  
-  F_ROM_CE = 1 << 3,
-  F_GEN_TX_EN = 1 << 4,
-  F_SRD_OE = 1 << 5,
-  F_ROM_OE = 1 << 6,
-  F_SL165_LD = 1 << 7;
+#define ROM_CH 0
+#define CNTR_CH 1
+#define SD_CH 2
 
-int ROM_CH = 0,
-  CNTR_CH = 1,
-  SD_CH = 2;
+#define BUSY_LED A5
+
+// // Direct Control
+#define SPI_ADDR0 7
+#define SPI_ADDR1 3
+#define CNTR_SR595_LATCH 4
+#define CNTR_SR595_OE 5
+
+// int F_SRA_OE = 1,
+//   F_GEN_RES = 1 << 1,
+//   F_ROM_WE = 1 << 2,  
+//   F_ROM_CE = 1 << 3,
+//   F_GEN_TX_EN = 1 << 4,
+//   F_SRD_OE = 1 << 5,
+//   F_ROM_OE = 1 << 6,
+//   F_SL165_LD = 1 << 7;
+
+// int ROM_CH = 0,
+//   CNTR_CH = 1,
+//   SD_CH = 2;
 
 // Direct Control
-int SPI_ADDR0 = 7;
-int SPI_ADDR1 = 3;
-int CNTR_SR595_LATCH = 4;
-int CNTR_SR595_OE = 5;
+// int SPI_ADDR0 = 7;
+// int SPI_ADDR1 = 3;
+// int CNTR_SR595_LATCH = 4;
+// int CNTR_SR595_OE = 5;
 
+bool pendingFlash = false;
+
+// we will reuse this buffer for all temp string operations to lower memory / stack usage
+char g_tempReusableBuf[64];
+
+#ifdef INCLUDE_METRICS
 typedef struct {
   unsigned long control;
   unsigned long bufferWrite;
@@ -40,12 +67,11 @@ typedef struct {
   unsigned long copyIncomingBuf;
 } Metrics;
 Metrics metrics;
-
+#endif
 
 // line buffer control
-int TEST_ENABLE = A5; // not used for now
-int SR595_LD = 6;
-int PIN_ROM_WE = 8;
+#define SR595_LD 6
+#define PIN_ROM_WE 8
 
 void selectSPIChannel(int channel) {
   PORTD = (channel & 0b01) ? PORTD | (1 << SPI_ADDR0) : PORTD &~ (1 << SPI_ADDR0);
@@ -66,7 +92,9 @@ char outText[11];
 
 byte global_flags = 0xff;
 inline void controlOut(byte flags, bool set, bool flush) {
+#ifdef INCLUDE_METRICS  
   unsigned long start = micros();
+#endif
 
   global_flags = set 
     ? global_flags | flags 
@@ -86,47 +114,30 @@ inline void controlOut(byte flags, bool set, bool flush) {
 //  if (debugMode) {
 //    Serial.print("DEBUG: Control: "); Serial.println(global_flags, BIN);
 //  }
-
+#ifdef INCLUDE_METRICS
   metrics.control += micros() - start;
+#endif
 }
-
 
 //Serial Actions
 enum {
 //- Ping (availability)
   PING = 0,
-//- Get EEPROM ID
-  READ_ROM_ID,
-//- Get EEPROM Name (hardcoded based on software ID)
-  READ_ROM_NAME,
-//- Get EEPROM Size (hardcoded based on software ID)
-  READ_ROM_SIZE,
-//- Read 128 word(16bit) page
-  READ_128_PAGE,
 //- Get 128 word(16bit) Page md5 Checksum 
   READ_128_PAGE_CRC,
   READ_128x128_PAGES,
 //- Write 128 word(16bit) page (with data# polling)
-  WRITE_128_PAGE,
   WRITE_128X_PAGES,
   WRITE_128X_PAGES_HEX,
 //- Busy? (page write in progress)
-  IS_DEVICE_BUSY,
   DEBUG_ON,
   DEBUG_OFF,
   WRITE_WORD,
-  LOCK_ADDRESS,
-  LOCK_ADDRESS_AND_DATA,
-  ENABLE_WRITE_PROTECT,
-  DISABLE_WRITE_PROTECT,
 // SEGA GENESIS control
   GENESIS_RESET,
   GENESIS_RESET_HOLD,
   GENESIS_RESET_RELEASE,
 // TEST access to cartridge
-  CART_LOCK_ADDRESS,
-  CART_READ_128_PAGE,
-  CART_READ_128x128_PAGES,
   LIST_SD_FILES,
   FLASH_SD_ROM,
 // no idea what is being asked
@@ -134,18 +145,14 @@ enum {
 };
 
 bool enabled = false;
-
 void enableControl() {
   if (!enabled) {
     enabled = true;
     digitalWrite(SR595_LD, LOW);
-
     controlOut(0xff &~ F_SL165_LD, true, true);
-
-    digitalWrite(TEST_ENABLE, HIGH);
-
+#ifdef INCLUDE_METRICS    
     memset(&metrics, 0, sizeof(metrics));
-
+#endif
     delay(100);
   }
 }
@@ -156,28 +163,23 @@ void disableControl() {
   digitalWrite(SR595_LD, LOW);
   controlOut(0xff, true, false);
   controlOut(F_GEN_TX_EN, false, true);
-
   
   enabled = false;
   delay(50);
-//  delay(1000);
-}
-
-void readDummyToResetRom() {
-  for (int i = 0; i < 256; i++) {
-    in16bits(i);
-  }
 }
 
 int interruptReceived = 0;
 
 void genInterrupt() {
+  PORTB |= (1 << PORTB1);
+  DDRB |= (1 << DDB1);
   interruptReceived = 1;
-  digitalWrite(9, HIGH);
-  pinMode(9, OUTPUT);
 }
 
+
 void setup() {
+  // pinMode(BUSY_LED, OUTPUT);
+  // digitalWrite(BUSY_LED, HIGH);
 
   Serial.begin(baudRate);
   Serial.println();
@@ -208,9 +210,6 @@ void setup() {
 //  digitalWrite(F_GEN_RES, HIGH);
   controlOut(F_GEN_RES, true, true);
 
-  digitalWrite(TEST_ENABLE, HIGH);
-  pinMode(TEST_ENABLE, OUTPUT);
-
 //  Serial.begin(57600);
 
   delay(100);
@@ -223,11 +222,6 @@ void setup() {
 
   initBootup();
 
-  Serial.print(F("Available actions: 0.."));Serial.println(UNKNOWN_ACTION - 1);
-//  Serial.print("EEPROM: ");
-//  outputDeviceName();
-  DeviceID = readDeviceId();
-
   Serial.println(F("READY"));
 
   disableControl();
@@ -238,24 +232,24 @@ void setup() {
 
 int parseAction(String stringAction) {
   if (stringAction.equals(F("PING"))) return PING;
-  if (stringAction.equals(F("READ_ROM_ID"))) return READ_ROM_ID;
-  if (stringAction.equals(F("READ_ROM_NAME"))) return READ_ROM_NAME;
-  if (stringAction.equals(F("READ_ROM_SIZE"))) return READ_ROM_SIZE;
-  if (stringAction.equals(F("READ_128_PAGE"))) return READ_128_PAGE;
-  if (stringAction.equals(F("READ_128_PAGE_CRC"))) return READ_128_PAGE_CRC;
+  // if (stringAction.equals(F("READ_ROM_ID"))) return READ_ROM_ID;
+  // if (stringAction.equals(F("READ_ROM_NAME"))) return READ_ROM_NAME;
+  // if (stringAction.equals(F("READ_ROM_SIZE"))) return READ_ROM_SIZE;
+  // if (stringAction.equals(F("READ_128_PAGE"))) return READ_128_PAGE;
+  // if (stringAction.equals(F("READ_128_PAGE_CRC"))) return READ_128_PAGE_CRC;
   if (stringAction.equals(F("READ_128x128_PAGES"))) return READ_128x128_PAGES;
-  if (stringAction.equals(F("WRITE_128_PAGE"))) return WRITE_128_PAGE;
+  // if (stringAction.equals(F("WRITE_128_PAGE"))) return WRITE_128_PAGE;
   if (stringAction.equals(F("WRITE_128X_PAGES"))) return WRITE_128X_PAGES;
   if (stringAction.equals(F("WRITE_128X_PAGES_HEX"))) return WRITE_128X_PAGES_HEX;
  
-  if (stringAction.equals(F("IS_ROM_BUSY"))) return IS_DEVICE_BUSY;
+  // if (stringAction.equals(F("IS_ROM_BUSY"))) return IS_DEVICE_BUSY;
   if (stringAction.equals(F("DEBUG_ON"))) return DEBUG_ON;
   if (stringAction.equals(F("DEBUG_OFF"))) return DEBUG_OFF;
-  if (stringAction.equals(F("WRITE_WORD"))) return WRITE_WORD;
-  if (stringAction.equals(F("LOCK_ADDRESS"))) return LOCK_ADDRESS;
-  if (stringAction.equals(F("LOCK_ADDRESS_AND_DATA"))) return LOCK_ADDRESS_AND_DATA;
-  if (stringAction.equals(F("ENABLE_WRITE_PROTECT"))) return ENABLE_WRITE_PROTECT;
-  if (stringAction.equals(F("DISABLE_WRITE_PROTECT"))) return DISABLE_WRITE_PROTECT;
+  // if (stringAction.equals(F("WRITE_WORD"))) return WRITE_WORD;
+  // if (stringAction.equals(F("LOCK_ADDRESS"))) return LOCK_ADDRESS;
+  // if (stringAction.equals(F("LOCK_ADDRESS_AND_DATA"))) return LOCK_ADDRESS_AND_DATA;
+  // if (stringAction.equals(F("ENABLE_WRITE_PROTECT"))) return ENABLE_WRITE_PROTECT;
+  // if (stringAction.equals(F("DISABLE_WRITE_PROTECT"))) return DISABLE_WRITE_PROTECT;
   
   // genesis control
   if (stringAction.equals(F("GENESIS_RESET"))) return GENESIS_RESET;
@@ -263,9 +257,9 @@ int parseAction(String stringAction) {
   if (stringAction.equals(F("GENESIS_RESET_RELEASE"))) return GENESIS_RESET_RELEASE;
 
   // cart test
-  if (stringAction.equals(F("CART_LOCK_ADDRESS"))) return CART_LOCK_ADDRESS;
-  if (stringAction.equals(F("CART_READ_128_PAGE"))) return CART_READ_128_PAGE;
-  if (stringAction.equals(F("CART_READ_128x128_PAGES"))) return CART_READ_128x128_PAGES;
+  // if (stringAction.equals(F("CART_LOCK_ADDRESS"))) return CART_LOCK_ADDRESS;
+  // if (stringAction.equals(F("CART_READ_128_PAGE"))) return CART_READ_128_PAGE;
+  // if (stringAction.equals(F("CART_READ_128x128_PAGES"))) return CART_READ_128x128_PAGES;
   if (stringAction.equals(F("LIST_SD_FILES"))) return LIST_SD_FILES;
   if (stringAction.equals(F("FLASH_SD_ROM"))) return FLASH_SD_ROM;
   
@@ -273,46 +267,67 @@ int parseAction(String stringAction) {
   return UNKNOWN_ACTION;
 }
 
+
+
 void loop() {
+  bool actionInvoked = false;
+  // digitalWrite(BUSY_LED, LOW);
 
   if (interruptReceived) {
-    Serial.println("Interrupt called");
-    delay(1000);
+    // digitalWrite(BUSY_LED, HIGH);
+    // Serial.println("interrupt!!!");
+    if (!actionInvoked) {
+      handleGenSignal();
+    }
+
     pinMode(9, INPUT);
     interruptReceived = 0;
   }
-  
+
+  if (pendingFlash) {
+    pendingFlash = false;
+    enableControl(); flashAndStartROM(g_tempReusableBuf); disableControl(); genesisReset();
+  }
+ 
   if (Serial.available() > 0) {
 
     String input = Serial.readStringUntil('\n');
+#ifdef DEBUG_BUILD
     if (debugMode) {
       Serial.print(F("DEBUG: parsing raw input: "));Serial.println(input);
     }
+#endif
     int action = parseAction(input);
 
+#ifdef DEBUG_BUILD
     if (debugMode) {
       Serial.print(F("DEBUG: "));Serial.print(input);Serial.print(F("; decoded:"));Serial.println(action);
     }
+#endif
 
+    // digitalWrite(BUSY_LED, HIGH);
+    actionInvoked = true;
     switch (action) {
       case PING: Serial.println(F("PONG")); break;
-      case READ_ROM_ID: enableControl(); outputDeviceId(); disableControl(); break;
-      case READ_ROM_NAME: enableControl(); outputDeviceName(); disableControl(); break;
-      case READ_ROM_SIZE: enableControl(); outputDeviceSize(); disableControl(); break;
-      case READ_128_PAGE: enableControl(); read128WordPage(false); disableControl(); break;
-      case READ_128_PAGE_CRC: enableControl(); read128WordPageCRC(); disableControl(); break;
+      // case READ_ROM_ID: enableControl(); outputDeviceId(); disableControl(); break;
+      // case READ_ROM_NAME: enableControl(); outputDeviceName(); disableControl(); break;
+      // case READ_ROM_SIZE: enableControl(); outputDeviceSize(); disableControl(); break;
+      // case READ_128_PAGE: enableControl(); read128WordPage(false); disableControl(); break;
+      // case READ_128_PAGE_CRC: enableControl(); read128WordPageCRC(); disableControl(); break;
       case READ_128x128_PAGES: enableControl(); read128x128WordPages(false); disableControl(); break;
-      case WRITE_128_PAGE: enableControl(); write128WordPage(); disableControl(); break;
+      // case WRITE_128_PAGE: enableControl(); write128WordPage(); disableControl(); break;
       case WRITE_128X_PAGES: enableControl(); write128WordXPages(); disableControl(); break;
       case WRITE_128X_PAGES_HEX: enableControl(); write128WordXPages(true); disableControl(); break;
-      case DEBUG_ON: debugMode = true; Serial.println("DEBUG mode ON!"); break;
-      case DEBUG_OFF: debugMode = false; Serial.println("DEBUG mode OFF!"); break;
 
-      case WRITE_WORD: enableControl(); writeDataAtAddress(); break;
-      case LOCK_ADDRESS: enableControl(); lockAddress(false); break;
-      case LOCK_ADDRESS_AND_DATA: enableControl(); lockAddressAndData(); break;
-      case ENABLE_WRITE_PROTECT: writeProtect(true); break;
-      case DISABLE_WRITE_PROTECT: writeProtect(false); break;
+      // case DEBUG_ON: debugMode = true; Serial.println("DEBUG mode ON!"); break;
+      // case DEBUG_OFF: debugMode = false; Serial.println("DEBUG mode OFF!"); break;
+
+
+      // case WRITE_WORD: enableControl(); writeDataAtAddress(); break;
+      // case LOCK_ADDRESS: enableControl(); lockAddress(false); break;
+      // case LOCK_ADDRESS_AND_DATA: enableControl(); lockAddressAndData(); break;
+      // case ENABLE_WRITE_PROTECT: writeProtect(true); break;
+      // case DISABLE_WRITE_PROTECT: writeProtect(false); break;
       // Sega Genesis
       case GENESIS_RESET: genesisReset(); break;
       case GENESIS_RESET_HOLD: genesisResetHold(); break;
@@ -320,8 +335,8 @@ void loop() {
 
       // read via cart access
 //      case CART_LOCK_ADDRESS: disableControl(); lockAddress(true); break;
-      case CART_READ_128_PAGE: read128WordPage(true); break;
-      case CART_READ_128x128_PAGES: read128x128WordPages(true); break;
+      // case CART_READ_128_PAGE: read128WordPage(true); break;
+      // case CART_READ_128x128_PAGES: read128x128WordPages(true); break;
 
       case LIST_SD_FILES: listSDFiles(); break;
       case FLASH_SD_ROM: enableControl(); flashAndStartROM(NULL); disableControl(); genesisReset(); break;
@@ -330,6 +345,12 @@ void loop() {
       case UNKNOWN_ACTION: Serial.println(F("UNKNOWN_ACTION")); break;
       default: break;
     }
+    actionInvoked = false;
+
+//    if (debugMode) {
+//      Serial.print(F("DEBUG: "));Serial.println(F("Waiting on new input..."));
+//    }
+
   }
 }
 
@@ -342,14 +363,18 @@ void loop() {
 // ********************************
 
 void genesisReset() {
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.println(F("DEBUG: reset->low"));
   }
+#endif
   controlOut(F_GEN_RES, false, true);
   delay(100);
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.println(F("DEBUG: reset->high"));
   }
+#endif
   controlOut(F_ROM_CE, false, false);
   controlOut(F_GEN_RES, true, true);
 
@@ -357,18 +382,22 @@ void genesisReset() {
 }
 
 void genesisResetHold() {
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.println(F("DEBUG: RESET_HOLD"));
   }
+#endif
   controlOut(F_GEN_RES, false, true);
   Serial.println(F("ACK_GENESIS"));
 }
 
 
 void genesisResetRelease() {
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.println(F("DEBUG: RESET_RELEASE"));
   }
+#endif
   controlOut(F_GEN_RES, true, true);
   Serial.println(F("ACK_GENESIS"));
 }
@@ -381,23 +410,32 @@ void initBootup() {
   int base = 0x80;
 //  outAddress(address);
   int value = in16bits(base);
+#ifdef DEBUG_BUILD
   if (debugMode) {
     int value1 = in16bits(base + 1);
     int value2 = in16bits(base + 2);
     int value3 = in16bits(base + 3);
-    Serial.print("DEBUG: initCheck: ");
+    Serial.print(F("DEBUG: initCheck: "));
     Serial.print(value, HEX);Serial.print(":");
     Serial.print(value1, HEX);Serial.print(":");
     Serial.print(value2, HEX);Serial.print(":");
     Serial.print(value3, HEX);
-    Serial.println(", expected: 5345");
+    Serial.println(F(", expected: 5345"));
   }
+#endif
   if (value != 0x5345) {
+#ifdef DEBUG_BUILD
     Serial.println("DEBUG: Loading bootrom...");
-    flashAndStartROM("_BOOT.MD");
+#endif
+    strcpy(g_tempReusableBuf, "_BOOT.MD");
+    pendingFlash = true;
+
+    // flashAndStartROM("_BOOT.MD");
     delay(100);
   } else {
+#ifdef DEBUG_BUILD
     Serial.println("DEBUG: Genesys rom found, booting...");
+#endif
   }
   
 }
@@ -421,6 +459,10 @@ void listSDFiles() {
 
 bool printDirectory(File dir, String prefix)               // lists the files and filesize on the SD card (only root)
 {
+  char romName[28];
+  if (!dir) {
+    Serial.print("Directory not open: "); Serial.println(prefix);
+  }
   while (true) {
     File entry =  dir.openNextFile();
     if (! entry) {
@@ -434,10 +476,9 @@ bool printDirectory(File dir, String prefix)               // lists the files an
       printDirectory(entry, String(entry.name()) + "/");
     }
     else if (String(entry.name()).indexOf(".MD") > 0) {
-      char romName[25];
       entry.seek(0x150);
-      entry.read(romName, 24);
-      romName[24] = '\0';
+      entry.read(romName, 47);
+      romName[47] = '\0';
 
       Serial.print(prefix);
       Serial.print(entry.name());
@@ -458,11 +499,20 @@ bool printDirectory(File dir) {
 }
 
 void flashAndStartROM(char *inFilename) {
+#ifdef DEBUG_BUILD
+  selectSPIChannel(SD_CH);
+  SD.begin();
+  Serial.println(F("DEBUG::flashAndStartROM listing SD card contents"));
 
+  File root = SD.open("/");
+  printDirectory(root);                             // list files on SD1
+  root.close();
+#endif
+
+#ifdef INCLUDE_METRICS
   unsigned long action_start = micros();
-
   unsigned long read_start = micros();
-
+#endif
 
   char filename[32];
   memset(filename, 0, sizeof(filename));
@@ -475,180 +525,99 @@ void flashAndStartROM(char *inFilename) {
     }
   }
 
-  String targetRom = String(inFilename ? inFilename : filename);
+  char *targetRom = inFilename ? inFilename : filename;
 
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.print(F("DEBUG: Target file: "));Serial.println(targetRom);
   }
+  Serial.print(F("DEBUG: Opening file rom 1:"));Serial.println(targetRom);
+  // Serial.print(F("DEBUG: Opening file rom 1:"));Serial.println(inFilename);
+#endif
 
 //  unsigned long read_start = micros();
 
   selectSPIChannel(SD_CH);
   SD.begin();
-  File file = SD.open(targetRom);
+
+  File file = SD.open(inFilename);
   if (!file) {
+#ifdef DEBUG_BUILD
     if (debugMode) {
       Serial.println(F("DEBUG: Bailing as the file doesn't exist"));
     }
+#endif
+    Serial.println(F("NOT_FOUND"));
     return;
+  } else {
+    Serial.println(F("success"));
   }
 
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.print(F("DEBUG: File: "));Serial.print(file.name());Serial.print("|");Serial.println(file.size());
   }
+#endif
 
-  char romName[24];
+  char romName[25];
   file.seek(0x150);
   file.read(romName, 24);
   file.seek(0);
+  romName[24] = '\0';
 
+#ifdef INCLUDE_METRICS
   metrics.bytesReceive += micros() - read_start;
+#endif
 
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.print(F("DEBUG: Flashing ROM: ")); Serial.print(file.name()); Serial.print(" : "); Serial.println(romName);
   }
+#endif
 
-  int pageSize = 128;
-  int pages = file.size() / pageSize / 2;
-  int buf[pageSize];
+  int pages = file.size() / FlashPageSize / 2;
+  int buf[FlashPageSize];
   for (int i = 0 ; i < pages; i++) {
 
+#ifdef INCLUDE_METRICS
     read_start = micros();
-    
+#endif
+
     selectSPIChannel(SD_CH);
     
-    unsigned long address = i * pageSize;
-//    file.seek(address * 2);
-    file.read(buf, pageSize * 2);
+    unsigned long address = i * FlashPageSize;
+    file.read(buf, FlashPageSize * 2);
   
+#ifdef INCLUDE_METRICS
     metrics.bytesReceive += micros() - read_start;
+#endif
 
     if (i%16==0) {
-      Serial.print("Writing page: ");Serial.print(i);Serial.print(", at addr: ");Serial.print(address, HEX);
-      Serial.print(", of pages: "); Serial.println(pages);
+      Serial.print(F("Writing page: "));Serial.print(i);Serial.print(F(", at addr: "));Serial.print(address, HEX);
+      Serial.print(F(", of pages: ")); Serial.println(pages);
     }
 
-    writeBuffer(address, buf, pageSize, true, true);
+    writeBuffer(address, buf, FlashPageSize, true, true);
   }
-
-  // read page by page and write to file
-//    int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess)
-
   file.close();
+
+#ifdef INCLUDE_METRICS
   metrics.action = micros() - action_start;
-  
+#endif
+
   Serial.println("ACK");
 
-  Serial.print("Control:");Serial.print(metrics.control);Serial.print("|");
-  Serial.print("Read:");Serial.print(metrics.bytesReceive);Serial.print("|");
-  Serial.print("Write:");Serial.print(metrics.bufferWrite);Serial.print("|");
+#ifdef INCLUDE_METRICS
+  Serial.print(F("Control:"));Serial.print(metrics.control);Serial.print("|");
+  Serial.print(F("Read:"));Serial.print(metrics.bytesReceive);Serial.print("|");
+  Serial.print(F("Write:"));Serial.print(metrics.bufferWrite);Serial.print("|");
 //  Serial.print("PARSE:");Serial.print(metrics.parseBytes);Serial.print("|");
 //  Serial.print("COPY:");Serial.print(metrics.copyIncomingBuf);Serial.print("|");
-  Serial.print("Action:");Serial.print(metrics.action);Serial.print("|");
+  Serial.print(F("Action:"));Serial.print(metrics.action);Serial.print("|");
   Serial.println();
+#endif
 }
 
-// ********************************
-// ********************************
-// ********************************
-// EEPROM
-// ********************************
-// ********************************
-// ********************************
-
-int readDeviceId() {
-  // SRAM does not have software id entry and causes data corruption if attempted
-  return 0;
-  
-  Serial.println(F("DEBUG: Reading device ID"));
-  // sofwware id entry
-  writeWordBoth(0x5555, 0xAAAA);
-  writeWordBoth(0x2AAA, 0x5555);
-  writeWordBoth(0x5555, 0x9090);
-  delay(10);
-
-
-  int rawVendor = in16bits(0);
-  int rawDevice = in16bits(1);
-
-  Serial.print(F("DEBUG: RAW vendor:"));Serial.print(rawVendor, HEX); Serial.print(F(", device: "));Serial.println(rawDevice, HEX); 
-
-  byte vendorId = rawVendor;
-  byte deviceId = rawDevice;
-
-
-  // sofwware id exit
-  writeWordBoth(0x5555, 0xAA);
-  writeWordBoth(0x2AAA, 0x55);
-  writeWordBoth(0x5555, 0xF0);
-
-  Serial.print(F("Vendor: "));Serial.print(vendorId, HEX);Serial.print(F(", deviceId: "));Serial.println(deviceId, HEX);
-
-  return vendorId << 8 | deviceId;
-}
-
-void writeProtect(bool enable) {
-  if (!enable) {
-    writeWordBoth(0x5555, 0xAA);
-    writeWordBoth(0x2AAA, 0x55);
-    writeWordBoth(0x5555, 0x80);
-    writeWordBoth(0x5555, 0xAA);
-    writeWordBoth(0x2AAA, 0x55);
-    writeWordBoth(0x5555, 0x20);
-    delay(10);
-    Serial.println("WRITE_PROTECT_DISABLED");
-  }
-}
-
-void outputDeviceId() {
-  DeviceID = readDeviceId();
-  byte vendorId = DeviceID >> 8;
-  byte chipId = DeviceID & 0xff;
-  Serial.print(vendorId, HEX);
-  Serial.println(chipId, HEX);
-}
-
-void outputDeviceName() {
-  DeviceID = readDeviceId();
-  byte vendorId = DeviceID >> 8;
-  byte chipId = DeviceID & 0xff;
-  if (vendorId == 0xbf && chipId == 0x07) {
-    Serial.println("SST29EE010");
-  } else if (vendorId == 0x1f && chipId == 0x13) {
-    Serial.println("AT49F040");
-  } else {
-    Serial.println("UNKNOWN");
-  }
-}
-
-long getRomSize(int deviceId) {
-  byte vendorId = deviceId >> 8;
-  byte chipId = deviceId & 0xff;
-  if (debugMode) {
-    Serial.print(F("DEBUG: getRomSize:: vendorId:"));Serial.print(vendorId, HEX);Serial.print(F(";chipId:"));Serial.println(chipId, HEX);
-  }
-  long romSize = 0;
-  if (vendorId == 0xbf && chipId == 0x07) {
-    if (debugMode) {
-      Serial.println(F("DEBUG: Found EEPROM SST SST29EE010"));
-    }
-    romSize = 262144;
-  } else if (vendorId == 0x1f && chipId == 0x13) {
-    if (debugMode) {
-      Serial.println(F("DEBUG: Found EEPROM Atmel AT49F040"));
-    }
-    romSize = 262144 * 8;
-  }
-  if (debugMode) {
-    Serial.print(F("DEBUG: romSize:"));Serial.println(romSize, HEX);
-  }
-  return romSize;
-}
-
-void outputDeviceSize() {
-  long romSize = getRomSize(DeviceID);
-  Serial.println(romSize, HEX);
-}
 
 enum {
   SUCCESS = 0,
@@ -659,6 +628,7 @@ enum {
 };
 
 void debugErrorOut(int error) {
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.print(F("DEBUG: got error "));
     switch (error) {
@@ -669,7 +639,10 @@ void debugErrorOut(int error) {
       default: Serial.print(F("UNKNOWN:")); Serial.println(error, HEX); break;
     }
   }
+#endif
 }
+
+char g_inputBuf[32];
 
 int loadStringLine(char *buf, int maxLength) {
   Serial.println(F("AWAIT_STR"));
@@ -690,9 +663,6 @@ int loadStringLine(char *buf, int maxLength) {
 }
 
 unsigned long loadAddress(int &error, bool alignPageBoundary, bool validateChipSize) {
-  validateChipSize = ValidateAddress ? validateChipSize : false;
-  long romSize = getRomSize(DeviceID);
-  
   Serial.println(F("AWAIT_ADDR_HEX"));
   error = SUCCESS;
 
@@ -701,29 +671,35 @@ unsigned long loadAddress(int &error, bool alignPageBoundary, bool validateChipS
   while (Serial.available() == 0) {
     if (millis() - start > 3000) {
       error = ERROR_TIMEOUT;
+#ifdef DEBUG_BUILD
       Serial.println(F("DEBUG: loadAddress TIMEOUT, bailing"));
+#endif
       return;
     }
   }
 
+#ifdef DEBUG_BUILD
   Serial.println(F("DEBUG: Parsing serial input"));
-
+#endif
+  char inputBuf[8];
   // read in 24 bit value
-  char input[8];
-  memset(input, 0, 8);
-  Serial.readBytesUntil('\n', input, 7);
+  memset(inputBuf, 0, 8);
+  Serial.readBytesUntil('\n', inputBuf, 7);
   // parse hex address that should be lower than chip size or it will be invalid address
   char *endChar = 0;
-  unsigned long address = strtol(input, &endChar, 16);
-  const char *str = input;
+  unsigned long address = strtol(inputBuf, &endChar, 16);
+  const char *str = inputBuf;
   int charsParsed = 0;
   while (*str && *str != *endChar) {
     ++charsParsed;
     ++str;
   }
+
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.print(F("DEBUG: chars parsed:"));Serial.println(charsParsed);
   }
+#endif
 
   // sink the rest of the stream until newline
   if (Serial.available() > 0) {
@@ -735,28 +711,30 @@ unsigned long loadAddress(int &error, bool alignPageBoundary, bool validateChipS
     return 0;
   }
 
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.print(F("DEBUG: Got address: 0x"));Serial.println(address, HEX);
   }
-
-  if (validateChipSize && address * 2 >= romSize) {
-    Serial.println(F("DEBUG: Chip size validation failed"));
-    error = ERROR_ADDR_RANGE;
-    return 0;
-  }
+#endif
 
   Serial.println("ACK_ADDR");
 
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.print(F("DEBUG: Returning address: 0x"));Serial.println(address, HEX);
   }
+#endif
 
   if (alignPageBoundary) {
     // figure out the page boundary if 
     unsigned long pageStartAddress = address - address % 128;
+
+#ifdef DEBUG_BUILD
     if (debugMode) {
       Serial.print(F("DEBUG: Page start address: 0x"));Serial.println(pageStartAddress, HEX);
     }
+#endif
+
     return pageStartAddress;
   } else {
     return address;
@@ -772,7 +750,9 @@ int loadAddress(int &error) {
 }
 
 int loadDataBytes(unsigned int *buf, unsigned int numWords) {
+#ifdef INCLUDE_METRICS
   unsigned long metrics_start = micros();
+#endif
   int error = SUCCESS;
 
   Serial.println(F("AWAIT_DATA_HEX"));
@@ -788,12 +768,11 @@ int loadDataBytes(unsigned int *buf, unsigned int numWords) {
   int numBytes = numWords * 2;
 //  int wordsRead = 0;
   int bytesRead = Serial.readBytes((byte*)buf, numBytes);
+
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.print(F("DEBUG: bytesRead: "));Serial.println(bytesRead);
   }
-
-//  while (wordsRead < totalReadWords) {
-//      int bytesRead = Serial.readBytes(input, 4);
 
   if (debugMode) {
     char tmpStr[5];
@@ -805,8 +784,11 @@ int loadDataBytes(unsigned int *buf, unsigned int numWords) {
     }
     Serial.println();
   }
+#endif
 
+#ifdef INCLUDE_METRICS
   metrics.bytesReceive += micros() - metrics_start;
+#endif
 
   Serial.println(F("ACK_DATA"));
   
@@ -814,7 +796,11 @@ int loadDataBytes(unsigned int *buf, unsigned int numWords) {
 }
 
 int loadDataHex(unsigned int *buf, unsigned int bufSize) {
+
+#ifdef INCLUDE_METRICS
   unsigned long metrics_start = micros();
+#endif
+
   int error = SUCCESS;
 
   Serial.println(F("AWAIT_DATA_HEX"));
@@ -834,14 +820,19 @@ int loadDataHex(unsigned int *buf, unsigned int bufSize) {
     char input[5];
     int bytesRead = Serial.readBytes(input, 4);
     if (bytesRead < 4) {
+#ifdef DEBUG_BUILD      
       if (debugMode) {
         Serial.print(F("DEBUG: bytesRead: "));Serial.print(bytesRead);Serial.print(F(", expected: 4"));
         Serial.print(F(", wordsRead:"));Serial.print(wordsRead);Serial.print(F(", expected:"));Serial.println(totalReadWords);
       }
+#endif
       return ERROR_TIMEOUT;
     }
 
+#ifdef INCLUDE_METRICS
     unsigned long parseb_start = micros();
+#endif
+
     char *endChar = 0;
     unsigned int dataWord = strtol(input, &endChar, 16);
     const char *str = input;
@@ -854,17 +845,27 @@ int loadDataHex(unsigned int *buf, unsigned int bufSize) {
       return ERROR_PARSE;
     }
     otherBuf[wordsRead++] = flipIntBytes(dataWord);
+
+#ifdef INCLUDE_METRICS
     metrics.parseBytes += micros() - parseb_start;
+#endif
+
   }
+#ifdef DEBUG_BUILD  
   if (debugMode) {
     Serial.println(F("DEBUG: about to ack data"));
   }
+#endif
   Serial.println(F("ACK_DATA"));
 
   unsigned long copy_start = micros();
   memcpy(buf, otherBuf, bufSize * sizeof(int));
-  metrics.copyIncomingBuf += micros() - copy_start;
 
+#ifdef INCLUDE_METRICS
+  metrics.copyIncomingBuf += micros() - copy_start;
+#endif
+
+#ifdef DEBUG_BUILD
   if (debugMode) {
     char tmpStr[5];
 
@@ -875,8 +876,11 @@ int loadDataHex(unsigned int *buf, unsigned int bufSize) {
     }
     Serial.println();
   }
+#endif
 
+#ifdef INCLUDE_METRICS
   metrics.bytesReceive += micros() - metrics_start;
+#endif
 
   return SUCCESS;
 }
@@ -916,9 +920,12 @@ int loadPages(int &error) {
     ++charsParsed;
     ++str;
   }
+
+#ifdef DEBUG_BUILD  
   if (debugMode) {
     Serial.print(F("DEBUG: chars parsed:"));Serial.println(charsParsed);
   }
+#endif
 
   // sink the rest of the stream until newline
   if (Serial.available() > 0) {
@@ -930,9 +937,11 @@ int loadPages(int &error) {
     return 0;
   }
 
+#ifdef DEBUG_BUILD
   if (debugMode) {
     Serial.print(F("DEBUG: Got pages: 0x"));Serial.println(pages, HEX);
   }
+#endif
   
   Serial.println(F("ACK_PAGES"));
   return pages;
@@ -950,169 +959,30 @@ void read128WordPage(bool cartRead) {
   }
 
   int bytesToRead = 4;
+
+#ifdef DEBUG_BUILD  
   if (debugMode) {
     char tmpStr[5];
     Serial.print("DEBUG: device:"); Serial.print(address, HEX); Serial.print(" bytes: "); 
     // output 128 words (we are using 2 chips each containing a byte) for the page
     for (unsigned long i = 0; i < bytesToRead; i++) {
-      unsigned int val = cartRead ? in16bitsCart(address + i) : in16bits(address + i);
+      unsigned int val = in16bits(address + i);
       sprintf(tmpStr, "%04X", val);
       Serial.print(tmpStr);
     }
     Serial.println();
   }
+#endif
 
   Serial.println("DATA_BEGIN");
   char tmpStr[5];
   // output 128 words (we are using 2 chips each containing a byte) for the page
   for (unsigned long i = 0; i < bytesToRead; i++) {
-    unsigned int val = cartRead ? in16bitsCart(address + i) : in16bits(address + i);
+    unsigned int val = in16bits(address + i);
     sprintf(tmpStr, "%04X", val);
     Serial.print(tmpStr);
   }
   Serial.println();
-}
-
-void lockAddress(bool cart) {
-  int error;
-  unsigned long address = loadAddress(error, false, false);
-
-  if (error) {
-    debugErrorOut(error);
-    Serial.print(F("ERR_NO_ADDR "));Serial.println(error, HEX);
-    return;
-  }
-
-
-  if (debugMode) {
-    Serial.print(F("DEBUG: Locking at: ")); Serial.println(address, HEX);
-  }
-
-//  digitalWrite(TEST_ENABLE, LOW);
-  
-  outAddress(address);
-
-  if (cart) {
-    controlOut(F_GEN_TX_EN, LOW, true);
-    digitalWrite(TEST_ENABLE, LOW);
-    if (debugMode) {
-      Serial.println("DEEBUG: pulling bus enable low");
-    }
-  } else {
-    controlOut(F_ROM_CE|F_ROM_OE, LOW, true);
-  }
-
-  if (debugMode) {
-    // latch & read
-    controlOut(F_SL165_LD, LOW, true);
-    controlOut(F_SL165_LD, HIGH, true);
-
-    selectSPIChannel(ROM_CH);
-    SPI.begin();
-    unsigned int inValue = SPI.transfer16(0);
-    SPI.end();
-
-    inValue = ((inValue & 0xff) << 8) + (inValue >> 8);
-    Serial.print(F("DEBUG: Locked at: ")); Serial.print(address, HEX); Serial.print(F(", data: "));
-    char tmpStr[5];
-    sprintf(tmpStr, "%04X", inValue);
-    Serial.println(tmpStr);
-  }
-
-//  digitalWrite(TEST_ENABLE, HIGH);
-
-  Serial.println(F("ADDR_LOCKED"));
-}
-
-void writeDataAtAddress() {
-  int error;
-  unsigned long address = loadAddress(error, false, false);
-  if (error) {
-    debugErrorOut(error);
-    Serial.print(F("ERR_NO_ADDR "));Serial.println(error, HEX);
-    return;
-  }
-
-  unsigned int data;
-  error = loadData(&data, 1);
-  if (error) {
-    debugErrorOut(error);
-    Serial.print(F("ERR_NO_DATA "));Serial.println(error, HEX);
-    return;
-  }
-
-//  outAddressAndData(address, data);
-  writeWord(address, data);
-//  writeValueTest(address, data);
-
-  outAddress(address);
-  controlOut(F_ROM_CE | F_ROM_OE, LOW, true);
-
-  controlOut(F_SL165_LD, LOW, true);
-  controlOut(F_SL165_LD, HIGH, true);
-
-  selectSPIChannel(ROM_CH);
-  SPI.begin();
-  unsigned int inValue = SPI.transfer16(0);
-  SPI.end();
-
-  inValue = ((inValue & 0xff) << 8) + (inValue >> 8);
-  Serial.print(F("DEBUG: Written at: ")); Serial.print(address, HEX); Serial.print(F(", data: "));
-  char tmpStr[5];
-  sprintf(tmpStr, "%04X", inValue);
-  Serial.println(tmpStr);
-
-  Serial.println(F("WRITE_WORD_ACK"));  
-}
-
-void lockAddressAndData() {
-  int error;
-  unsigned long address = loadAddress(error, false, false);
-  if (error) {
-    debugErrorOut(error);
-    Serial.print(F("ERR_NO_ADDR "));Serial.println(error, HEX);
-    return;
-  }
-
-  unsigned int data;
-  error = loadData(&data, 1);
-  if (error) {
-    debugErrorOut(error);
-    Serial.print(F("ERR_NO_DATA "));Serial.println(error, HEX);
-    return;
-  }
-
-  if (debugMode) {
-    Serial.print(F("DEBUG: Locking at: "));Serial.print(address, HEX);Serial.print(F(", data: "));  
-//    unsigned int val = in16bits(address);
-    char tmpStr[5];
-    sprintf(tmpStr, "%04X", data);
-    Serial.println(tmpStr);
-  }
-
-  // disable OE on chip
-  controlOut(F_ROM_CE | F_ROM_CE, HIGH, true);
-
-  outAddressAndData(address, data);
-
-  // read back throught 165
-  controlOut(F_SL165_LD, LOW, true);
-  controlOut(F_SL165_LD, HIGH, true);
-
-  selectSPIChannel(ROM_CH);
-  SPI.begin();
-  unsigned int inValue = SPI.transfer16(0);
-  SPI.end();
-
-  if (debugMode) {
-    Serial.print(F("DEBUG: data as seen by 165: "));
-    char tmpStr[5];
-    sprintf(tmpStr, "%04X", inValue);
-    Serial.println(tmpStr);
-  }
-
-
-  Serial.println(F("ADDR_AND_DATA_LOCKED"));
 }
 
 
@@ -1121,10 +991,13 @@ void read128x128WordPages(bool cartRead) {
   
   unsigned long address = loadAddress(error, false, !cartRead);
   
+#ifdef DEBUG_BUILD  
   Serial.print(F("DEBUG: Returned address: 0x"));Serial.println(address, HEX);
   if (debugMode) {
     Serial.print(F("DEBUG: real address: 0x"));Serial.print(address, HEX);Serial.print(F(", clamped address: 0x"));Serial.println(address - address % 128, HEX);
   }
+#endif
+
   address = address - address % 128;
   
   if (error) {
@@ -1145,6 +1018,7 @@ void read128x128WordPages(bool cartRead) {
   const long wordsPerPage = 128;
   char tmpStr[5];
 
+#ifdef DEBUG_BUILD  
   if (debugMode) {
     Serial.print(F("DEBUG: pages to read: "));Serial.print(pagesToLoad);  
     Serial.println(F(", at addresses:"));
@@ -1160,12 +1034,13 @@ void read128x128WordPages(bool cartRead) {
     Serial.print("DEBUG: device:"); Serial.print(address, HEX); Serial.print(" bytes: "); 
     // output 128 words (we are using 2 chips each containing a byte) for the page
     for (unsigned long i = 0; i < 128; i++) {
-       unsigned int val = cartRead ? in16bitsCart(address + i) : in16bits(address + i);
+       unsigned int val = in16bits(address + i);
       sprintf(tmpStr, "%04X", val);
       Serial.print(tmpStr);
     }
     Serial.println();
   }
+#endif
   
   Serial.println(F("DATA_BEGIN"));
 
@@ -1176,7 +1051,7 @@ void read128x128WordPages(bool cartRead) {
     unsigned char page_crc = 0;
     for (unsigned long i = 0; i < wordsPerPage; i++) {
       unsigned long read_at_address = address + pageOffset + i;
-      unsigned int val = cartRead ? in16bitsCart(read_at_address) : in16bits(read_at_address);
+      unsigned int val = in16bits(read_at_address);
       data[i] = val;
       while (Serial.availableForWrite() < 2) {}
     }
@@ -1202,17 +1077,22 @@ void read128WordPageCRC() {
     return;
   }
 
+#ifdef DEBUG_BUILD  
   if (debugMode) {
     Serial.println(F("DEBUG: Reading page..."));
   }
+#endif
+
   unsigned int data[128] = {0};
   for (unsigned int i = 0; i < 128; i++) {
     data[i] = in16bits(address + i);
   }
 
+#ifdef DEBUG_BUILD  
   if (debugMode) {
     Serial.println(F("DEBUG: calc CRC..."));
   }
+#endif
 
   unsigned char calculated_crc = calc_crc((unsigned char *)data, 128 * sizeof(int));
   Serial.println(calculated_crc, HEX);
@@ -1233,6 +1113,7 @@ void write128WordPage() {
   error = loadData(data);
   if (error) {
     debugErrorOut(error);
+#ifdef DEBUG_BUILD  
     if (debugMode) {
       char tmpStr[5];
       Serial.print(F("DEBUG: Received page: "));
@@ -1242,6 +1123,8 @@ void write128WordPage() {
       }
       Serial.println();
     }
+#endif
+
     Serial.print(F("ERR_NO_DATA "));Serial.println(error, HEX);
     return;
   }
@@ -1258,7 +1141,10 @@ void write128WordPage() {
 
 void write128WordXPages(bool hex) {
 
+#ifdef INCLUDE_METRICS
   unsigned long metrics_start = micros();
+#endif
+
   int error = SUCCESS;
   unsigned long address = loadAddress(error, true);
 
@@ -1283,6 +1169,7 @@ void write128WordXPages(bool hex) {
     error = hex ? loadDataHex(data, 128 * num128Pages) : loadDataBytes(data, 128 * num128Pages);
     if (error) {
       debugErrorOut(error);
+#ifdef DEBUG_BUILD  
       if (debugMode) {
         char tmpStr[5];
         Serial.print(F("DEBUG: Received page: "));
@@ -1292,10 +1179,14 @@ void write128WordXPages(bool hex) {
         }
         Serial.println();
       }
+#endif
+
       Serial.print(F("ERR_NO_DATA "));Serial.println(error, HEX);
       return;
     }
     unsigned long page_address = address + page * 128;
+
+#ifdef DEBUG_BUILD  
     if (debugMode) {
       char tmpStr[5];
       Serial.print(F("DEBUG: addr:")); Serial.print(page_address, HEX); Serial.print(F(" writing ")); Serial.print(num128Pages); Serial.print(F(" pages: "));
@@ -1305,8 +1196,11 @@ void write128WordXPages(bool hex) {
         Serial.print(tmpStr);
       }
       Serial.println();
-     
     }
+
+    Serial.println(F("DEBUG: Invoking write buffer"));
+#endif
+
     int error = writeBuffer(page_address, data, 128 * num128Pages, true, true);
     if (error) {
       debugErrorOut(error);
@@ -1316,9 +1210,11 @@ void write128WordXPages(bool hex) {
     
     calculated_crc = calc_crc((unsigned char *)data, 128 * num128Pages * sizeof(int), calculated_crc);
 
+#ifdef DEBUG_BUILD
     if (debugMode) {
       Serial.print(F("DEBUG: temp CRC: ")); Serial.println(calculated_crc, HEX);
     }
+#endif
   }
 
   Serial.println(F("ACK_DATA_WRITE"));
@@ -1332,6 +1228,7 @@ void write128WordXPages(bool hex) {
   unsigned long bytesReceive;
 } Metrics;
  */
+#ifdef INCLUDE_METRICS
   metrics.action = micros() - metrics_start;
 
   Serial.print("CNTR:");Serial.print(metrics.control);Serial.print("|");
@@ -1341,6 +1238,9 @@ void write128WordXPages(bool hex) {
 //  Serial.print("COPY:");Serial.print(metrics.copyIncomingBuf);Serial.print("|");
   Serial.print("TOTAL:");Serial.print(metrics.action);Serial.print("|");
   Serial.println();
+#else
+  Serial.println(F("CNTR:0|RCV:0|WRT:0|TOTAL:0"));
+#endif
 }
 
 void write128WordXPages() {
@@ -1353,28 +1253,6 @@ void write128WordXPages() {
 // Interaction with Device
 // internals for working with the eeprom chips
 
-void writeWord(long addr24bit, int value) {
-  writeBuffer(addr24bit, &value, 1, false);
-}
-
-void writeWordBoth(long addr24bit, int value) {
-  int output = value;
-  writeBuffer(addr24bit, &output, 1, false);
-}
-
-//char outText[20];
-void writeValueTest(long addr24bit, int value) {
-  controlOut(F_ROM_OE | F_ROM_WE, true, false);
-  // enable chip
-  controlOut(F_ROM_CE, false, true);
-
-  outAddressAndData(addr24bit, value);
-
-  // blip write
-  controlOut(F_ROM_WE, false, true);
-  controlOut(F_ROM_WE, true, true);
-}
-
 inline int flipIntBytes(int in) {
   return (0xff00 & in << 8) + (0xff & in >> 8);
 }
@@ -1384,54 +1262,30 @@ int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess) {
 }
 
 
-/*
- * 
- * void outAddressAndData(long addr24bit, int data16bit) {
-  outAddressAndData(addr24bit, data16bit, false);
-}
-
-void outAddressAndData(long addr24bit, int data16bit, bool flipBytes) {
-  // disable buf addr & data OE
-  controlOut(F_SRA_OE | F_SRD_OE, true, true);
-
-  if (flipBytes) {
-    data16bit = flipIntBytes(data16bit);
-  }
-
-  shiftOutAddressAndData(addr24bit, data16bit);
- 
-  // enble buf addr & data OE
-  controlOut(F_SRA_OE | F_SRD_OE, false, true);
-}
- * 
- */
-
-
 int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess, bool flipBytes) {
-  unsigned long start = micros();
 
+#ifdef INCLUDE_METRICS
+  unsigned long start = micros();
+#endif
+
+#ifdef DEBUG_MODE
   if (debugMode) {
     Serial.print("DEBUG: flipBytes:");Serial.print(flipBytes);
     Serial.println();
   }
-
-  controlOut(F_ROM_OE | F_ROM_WE, true, false);
+#endif
+ 
+  controlOut(F_ROM_OE, true, false);
   controlOut(F_SRA_OE | F_SRD_OE | F_ROM_CE, false, true);
 
   for (unsigned long i = 0; i < bufferSize; i++) {
     unsigned long target_address = addr24bit + i;
 
-//    outAddressAndData(target_address, buffer[i], flipBytes);
-//      int data16bit = flipBytes ? flipIntBytes(buffer[i]): buffer[i];
-
     shiftOutAddressAndData(target_address, flipBytes ? flipIntBytes(buffer[i]) : buffer[i]);
 
-//    controlOut(F_ROM_WE, false, true);
-//    controlOut(F_ROM_WE, true, true);
-
     // we have PORTB pins are offset by 8
-    PORTB |= 1 << (8 - PIN_ROM_WE);
     PORTB &= ~(1 << (8 - PIN_ROM_WE));
+    PORTB |= 1 << (8 - PIN_ROM_WE);
 
     if (true) {
       continue;
@@ -1442,7 +1296,8 @@ int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess, b
       bool pageBreak = target_address > 0 && ((target_address + 1) % 128 == 0 || i == bufferSize - 1);
       
       if (!pageBreak) continue;
-    
+
+#ifdef DEBUG_BUILD  
       if (debugMode) {
         char tmpStr[5];
         Serial.print(F("DEBUG: target_address: ")); Serial.print(target_address, HEX); 
@@ -1462,12 +1317,15 @@ int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess, b
         Serial.println();
 
       }
+#endif      
 
       unsigned long start = millis();
       while(true) {
         // poll 
         unsigned int last_word = buffer[i];
         unsigned int in_data = in16bits(target_address);
+
+#ifdef DEBUG_BUILD  
         if (debugMode) {
           Serial.print(F("DEBUG: in_data: ")); Serial.print(in_data, HEX);Serial.print(" from address: ");Serial.println(target_address, HEX);
           Serial.print(F("DEBUG: rom data: ")); Serial.print(in_data & 0x8080, BIN);Serial.print(" [");Serial.print(in_data, HEX);Serial.print("]");
@@ -1475,14 +1333,14 @@ int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess, b
           Serial.print(F(", index: ")); Serial.print(target_address);
           Serial.print(F(", data match?: ")); Serial.println((in_data & 0x8080) == (last_word & 0x8080));
         }
+#endif
 
         if (in_data == last_word) {
+#ifdef DEBUG_BUILD  
           Serial.println(F("DEBUG: page write complete, moving on")); 
-
-//          controlOut(F_ROM_CE, false, true);
-//          controlOut(F_ROM_CE, true, true);
-
           Serial.print(F("DEBUG: PAGE READ:: \n"));
+#endif
+
           char tmpStr[5];
           for (unsigned long dAddr = page_start_address; dAddr < page_start_address + 128; dAddr++) {
             sprintf(tmpStr, "%04X", in16bits(dAddr));
@@ -1495,14 +1353,13 @@ int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess, b
         if (millis() - start > 1000) {
           return ERROR_TIMEOUT;
         }
-//        delay(1);
       }
     }
-
-//    controlOut(F_ROM_CE, true, true);
   }
 
+#ifdef INCLUDE_METRICS
   metrics.bufferWrite += micros() - start;
+#endif
 
   return 0;
 }
@@ -1550,20 +1407,22 @@ void shiftOutAddressAndData(long addr24bit, int data16bit) {
   byte data1 = (data16bit >> 8) & 0xff;
   byte data2 = data16bit;
 
+#ifdef DEBUG_BUILD  
   if (debugMode && trace) {
-    Serial.print("DEBUG:: Addr chunks: 0x");
+    Serial.print(F("DEBUG:: Addr chunks: 0x"));
     Serial.print(addr1, HEX);
     Serial.print(addr2, HEX);
     Serial.print(addr3, HEX);
-    Serial.print(" full:: ");Serial.print(addr24bit, HEX);
+    Serial.print(F(" full:: "));Serial.print(addr24bit, HEX);
     Serial.println();    
 
-    Serial.print("DEBUG:: Data chunks: 0x");
+    Serial.print(F("DEBUG:: Data chunks: 0x"));
     Serial.print(data1, HEX);
     Serial.print(data2, HEX);
-    Serial.print(" full:: ");Serial.print(data16bit, HEX);
+    Serial.print(F(" full:: "));Serial.print(data16bit, HEX);
     Serial.println();    
   }
+#endif
 
   // new board had 595s wired other way around so data bytes have to be swapped
   byte buf[5] = {data1, data2, addr1, addr2, addr3};
@@ -1596,35 +1455,6 @@ unsigned int in16bits(long addr24bit) {
   return outValue & 0xffff;
 }
 
-unsigned int in16bitsCart(long addr24bit) {
-//  digitalWrite(F_SRD_OE, HIGH); // avoid bus fighting
-//  digitalWrite(F_SRA_OE, HIGH);
-//  
-//  digitalWrite(TEST_ENABLE, LOW);
-//
-//  outAddress(addr24bit);
-//
-//  // enable output on ROM
-//  digitalWrite(F_ROM_CE, LOW);
-//  digitalWrite(F_ROM_OE, LOW);
-//
-//  digitalWrite(F_SL165_LD, LOW);
-//  digitalWrite(F_SL165_LD, HIGH);
-//
-//  SPI.begin();
-//  unsigned int inValue = SPI.transfer16(0);
-//  SPI.end();
-//
-//  digitalWrite(TEST_ENABLE, HIGH);
-//
-//  unsigned int outValue = ((inValue & 0xff) << 8) + (inValue >> 8);
-//  
-//  return outValue;
-  return 0;
-}
-
-
-
 // other utils
 const unsigned char CRC7_POLY = 0x91;
 unsigned char calc_crc(unsigned char message[], unsigned int len, unsigned char crc) {
@@ -1652,4 +1482,146 @@ unsigned char calc_crc(unsigned char message[], unsigned int len, unsigned char 
 
 unsigned char calc_crc(unsigned char message[], unsigned int len) {
   return calc_crc(message, len, 0);
+}
+
+void handleGenSignal() {
+  long addr = 0xd000 / 2;
+
+  enableControl();
+
+  int inValue = in16bits(addr);
+
+  Serial.print("Got sega request: "); Serial.println(inValue, HEX);
+
+  // char inString[64];
+  // int index = 0;
+  // Serial.print("Read words: 0x");
+  // while (true) {
+  //   addr++;
+  //   int inWord = in16bits(addr);
+  //   Serial.print(inWord, HEX);
+  //   inString[index++] = inWord >> 8;
+  //   inString[index++] = inWord & 0xff;
+  //   // look for null terminator of the string
+  //   if (inWord & 0xff == 0 || inWord >> 8 == 0) break;
+  // }
+  // Serial.println();
+  // Serial.print("Input string: ");Serial.println(inString);
+
+
+  if (inValue == 0x0001) {
+    Serial.println("Listing files...");
+    // write sd filenames to genesis
+    selectSPIChannel(SD_CH);
+    bool sdOpen = SD.begin();
+    File root = SD.open("/");
+    addr += 1;
+    
+    char strEntry[64];
+    // memset(strEntry, 0, 64);
+    // strEntry[0] = 1;
+    // strEntry[1] = 1;
+    // sprintf(strEntry + 2, "Files:");
+    // sprintf(strEntry + 14, "[additional]");
+    // writeBuffer(addr, (int *)strEntry, 32, true, true);
+    // addr += 64;
+
+    if (!sdOpen) {
+      memset(strEntry, 0, 64);
+      strEntry[0] = 1;
+      strEntry[1] = 0;
+      sprintf(strEntry + 2, "SD Failed");
+      sprintf(strEntry + 14, "[additional]");
+      writeBuffer(addr, (int *)strEntry, 32, true, true);
+      addr += 64;
+      Serial.println("Failed to open SD Card");
+    }
+    Serial.println("Adding files...");
+
+    while (true) {
+      selectSPIChannel(SD_CH);
+      File entry =  root.openNextFile();
+      // filter out Mac OS & hidden files
+      String fnString = String(entry.name());
+      if (fnString.startsWith("FSEVEN") ||
+        fnString.startsWith("METADA") ||
+        fnString.startsWith("_BOOT")) {
+        continue;
+      }
+
+      if (!entry) {
+        memset(strEntry, 0, 64);
+        strEntry[0] = 1;
+        strEntry[1] = 0;
+        break;
+      }
+
+      // each entry header is 2 bytes / 1 word (easier to deal with words on 16bit system)
+      // file name in 8.3 format (12 chars + null terminator / 6 words)
+      // genesis game name (48 chars / 24 words)
+      // padding word to aling with 32 words / 64 bytes per entry
+
+      // if (entry.isDirectory()) {
+        memset(strEntry, 0, 64);
+        strEntry[0] = 1;
+        strEntry[1] = entry.isDirectory() ? 2 : 3;
+        memcpy(strEntry + 2, entry.name(), 12);
+        strEntry[14] = 0;
+
+        if (String(entry.name()).indexOf(".MD") > 0) {
+          entry.seek(0x150);
+          entry.read(strEntry + 15, 48);
+        } else {
+          memset(strEntry + 15, 0, 48);
+        }
+        // ensure there is null terminator for extended name
+        strEntry[63] = 0;
+        writeBuffer(addr, (int *)strEntry, 32, true, true);
+
+        Serial.print("Added file: ");Serial.println(entry.name());
+
+
+      addr += 32;
+
+      // }
+      entry.close();
+    }
+    root.close();
+
+
+
+    // indicate end
+    strEntry[0] = 1;
+    strEntry[1] = 0;
+    // memcpy(strEntry + 2, entry.name(), 12);
+    memset(strEntry + 2, 0, 62);
+    writeBuffer(addr, (int *)strEntry, 32, true, true);
+
+  } else if (inValue == 0x0002) {
+    // read filename & flash it
+    int index = 0;
+    Serial.print("Read words: 0x");
+    while (true) {
+      addr++;
+      int inWord = in16bits(addr);
+      Serial.print(inWord, HEX);
+      g_tempReusableBuf[index++] = inWord >> 8;
+      g_tempReusableBuf[index++] = inWord & 0xff;
+      // look for null terminator of the string
+      if (inWord & 0xff == 0 || inWord >> 8 == 0) break;
+    }
+    Serial.println();
+
+    Serial.print("Request to flash SD file: ");Serial.println(g_tempReusableBuf);
+    pendingFlash = true;
+
+    // flashAndStartROM(filename);
+  } else {
+    char strOut[64];
+    sprintf(strOut, "FrmArd: 0x%x", inValue + 1);
+    writeBuffer(addr + 1, (int *)strOut, sizeof(strOut) / 2, true, true);
+  }
+  
+  disableControl();
+
 }
