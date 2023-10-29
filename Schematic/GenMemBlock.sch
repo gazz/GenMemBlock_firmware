@@ -3,7 +3,7 @@ EELAYER 30 0
 EELAYER END
 $Descr A4 11693 8268
 encoding utf-8
-Sheet 1 1
+Sheet 1 2
 Title ""
 Date ""
 Rev ""
@@ -3309,6 +3309,8 @@ Text GLabel 13750 5650 0    50   Input ~ 0
 DTACK#
 Wire Wire Line
 	13750 5650 14150 5650
+Text Label 13750 5650 0    50   ~ 0
+DTACK#
 Wire Bus Line
 	5950 6450 7300 6450
 Wire Bus Line
@@ -3387,6 +3389,10 @@ Wire Bus Line
 	5450 1200 5450 3900
 Wire Bus Line
 	15000 100  15000 5550
-Text Label 13750 5650 0    50   ~ 0
-DTACK#
+$Sheet
+S 12450 6950 650  150 
+U 65320705
+F0 "Mem Module" 50
+F1 "mem_module.sch" 50
+$EndSheet
 $EndSCHEMATC
