@@ -2,7 +2,7 @@
 #include <SD.h>
 
 // #define INCLUDE_METRICS
-#define DEBUG_BUILD
+// #define DEBUG_BUILD
 
 const unsigned long baudRate = 500000;
 // const unsigned long baudRate = 115200;
@@ -15,10 +15,10 @@ bool debugMode =  true;
 
 #define F_SRA_OE 1
 #define F_GEN_RES (1 << 1)
-#define F_ROM_CE (1 << 3)
+// #define F_ROM_CE (1 << 3)
 #define F_GEN_TX_EN (1 << 4)
 #define F_SRD_OE (1 << 5)
-#define F_ROM_OE (1 << 6)
+// #define F_ROM_OE (1 << 6)
 #define F_SL165_LD (1 << 7)
 
 #define ROM_CH 0
@@ -32,6 +32,17 @@ bool debugMode =  true;
 #define SPI_ADDR1 3
 #define CNTR_SR595_LATCH 4
 #define CNTR_SR595_OE 5
+
+#define DTACK_OE_PIN 9
+#define DTACK_VAL_PIN 10
+
+// line buffer control
+#define SR595_LD 6
+#define PIN_ROM_WE 8
+#define PIN_ROM_CE A3
+#define PIN_ROM_OE A2
+
+#define SD_CS_PIN A0
 
 // int F_SRA_OE = 1,
 //   F_GEN_RES = 1 << 1,
@@ -69,13 +80,14 @@ typedef struct {
 Metrics metrics;
 #endif
 
-// line buffer control
-#define SR595_LD 6
-#define PIN_ROM_WE 8
 
 void selectSPIChannel(int channel) {
   PORTD = (channel & 0b01) ? PORTD | (1 << SPI_ADDR0) : PORTD &~ (1 << SPI_ADDR0);
   PORTD = (channel & 0b10) ? PORTD | (1 << SPI_ADDR1) : PORTD &~ (1 << SPI_ADDR1);
+  // set max spi speed (sd lib keeps on changing it)
+  // SPCR = (1 << SPE) | (1 << MSTR);
+  // SPSR |= (1 << SPI2X);
+
 }
 
 #define BYTE_TO_BINARY_PATTERN "0b%c%c%c%c%c%c%c%c"
@@ -145,11 +157,23 @@ enum {
 };
 
 bool enabled = false;
+// seize control and do not let genesis access it
 void enableControl() {
   if (!enabled) {
     enabled = true;
+    controlOut(F_SL165_LD, false, true);
     digitalWrite(SR595_LD, LOW);
-    controlOut(0xff &~ F_SL165_LD, true, true);
+    
+    pinMode(PIN_ROM_WE, OUTPUT);
+    pinMode(PIN_ROM_OE, OUTPUT);
+    pinMode(PIN_ROM_CE, OUTPUT);
+
+    pinMode(PIN_ROM_WE, OUTPUT);
+    
+    digitalWrite(PIN_ROM_WE, HIGH);
+    controlOut(F_GEN_TX_EN, true, true);
+
+    // controlOut(0xff &~ F_SL165_LD, true, true);
 #ifdef INCLUDE_METRICS    
     memset(&metrics, 0, sizeof(metrics));
 #endif
@@ -157,11 +181,18 @@ void enableControl() {
   }
 }
 
+// release control & let genesis access the memory
 void disableControl() {
 //  digitalWrite(SR595_LD, LOW);
 //  controlOut(0xff, true, true);
   digitalWrite(SR595_LD, LOW);
-  controlOut(0xff, true, false);
+  // digitalWrite(PIN_ROM_WE, HIGH);
+  // go high impedience on WE pin
+  pinMode(PIN_ROM_WE, INPUT);
+  pinMode(PIN_ROM_OE, INPUT);
+  pinMode(PIN_ROM_CE, INPUT);
+
+  controlOut(0xff, true, true);
   controlOut(F_GEN_TX_EN, false, true);
   
   enabled = false;
@@ -171,23 +202,26 @@ void disableControl() {
 int interruptReceived = 0;
 
 void genInterrupt() {
-  PORTB |= (1 << PORTB1);
-  DDRB |= (1 << DDB1);
+  noInterrupts();
   interruptReceived = 1;
 }
 
-
-void setup() {
+void lightSetup() {
   // pinMode(BUSY_LED, OUTPUT);
   // digitalWrite(BUSY_LED, HIGH);
-
-  Serial.begin(baudRate);
-  Serial.println();
+  
 
   // set up interrupt
   const int intPin = 2;
   pinMode(intPin, INPUT);
   attachInterrupt(digitalPinToInterrupt(intPin), genInterrupt, RISING);
+
+  digitalWrite(DTACK_OE_PIN, HIGH);
+  pinMode(DTACK_OE_PIN, OUTPUT);
+
+  pinMode(DTACK_VAL_PIN, OUTPUT);
+  digitalWrite(DTACK_VAL_PIN, HIGH);
+
 
   pinMode(SPI_ADDR0, OUTPUT);
   pinMode(SPI_ADDR1, OUTPUT);
@@ -214,9 +248,19 @@ void setup() {
 
   delay(100);
 
-  disableControl();
+  enableControl();
 
   delay(1);
+
+  disableControl();
+}
+
+
+void setup() {
+  Serial.begin(baudRate);
+  Serial.println();
+
+  lightSetup();
 
   enableControl();
 
@@ -267,21 +311,51 @@ int parseAction(String stringAction) {
   return UNKNOWN_ACTION;
 }
 
-
+unsigned int v = 0xabcd;
 
 void loop() {
   bool actionInvoked = false;
   // digitalWrite(BUSY_LED, LOW);
 
   if (interruptReceived) {
+
+
+    // // load the 16bit interruptId from data lines
+    // controlOut(F_SL165_LD, false, true);
+
+    // // shift data in 
+    // selectSPIChannel(ROM_CH);
+    // SPI.begin();
+    // unsigned int inValue = SPI.transfer16(0);
+    // SPI.end();
+    // unsigned int interruptId = (((inValue & 0xff) << 8) + (inValue >> 8)) & 0xffff;
+    // TODO: figure out why this data is not coming in properly
+    unsigned int interruptId = 0;
+
+    Serial.print("Got interrupt: ");Serial.println(interruptId, HEX);
     // digitalWrite(BUSY_LED, HIGH);
     // Serial.println("interrupt!!!");
+
+    enableControl();
+
+
     if (!actionInvoked) {
-      handleGenSignal();
+      handleGenSignal(interruptId);
     }
 
-    pinMode(9, INPUT);
+    // pinMode(9, INPUT);
+    // release genesis by reseting flip flop
+    disableControl();
     interruptReceived = 0;
+  
+
+    Serial.print("Released interrupt: ");Serial.println(interruptId, HEX);
+
+    // digitalWrite(DTACK_VAL_PIN, LOW);
+    digitalWrite(DTACK_OE_PIN, LOW);
+    digitalWrite(DTACK_OE_PIN, HIGH);
+    // digitalWrite(DTACK_VAL_PIN, HIGH);
+    interrupts();
   }
 
   if (pendingFlash) {
@@ -375,7 +449,6 @@ void genesisReset() {
     Serial.println(F("DEBUG: reset->high"));
   }
 #endif
-  controlOut(F_ROM_CE, false, false);
   controlOut(F_GEN_RES, true, true);
 
   Serial.println(F("ACK_GENESIS"));
@@ -450,7 +523,7 @@ void initBootup() {
 
 void listSDFiles() {
   selectSPIChannel(SD_CH);
-  SD.begin();
+  SD.begin(SD_CS_PIN);
   File root = SD.open("/");
   printDirectory(root);                             // list files on SD1
   root.close();
@@ -501,7 +574,7 @@ bool printDirectory(File dir) {
 void flashAndStartROM(char *inFilename) {
 #ifdef DEBUG_BUILD
   selectSPIChannel(SD_CH);
-  SD.begin();
+  SD.begin(SD_CS_PIN);
   Serial.println(F("DEBUG::flashAndStartROM listing SD card contents"));
 
   File root = SD.open("/");
@@ -538,7 +611,7 @@ void flashAndStartROM(char *inFilename) {
 //  unsigned long read_start = micros();
 
   selectSPIChannel(SD_CH);
-  SD.begin();
+  SD.begin(SD_CS_PIN);
 
   File file = SD.open(inFilename);
   if (!file) {
@@ -1275,8 +1348,9 @@ int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess, b
   }
 #endif
  
-  controlOut(F_ROM_OE, true, false);
-  controlOut(F_SRA_OE | F_SRD_OE | F_ROM_CE, false, true);
+  digitalWrite(PIN_ROM_OE, HIGH);
+  digitalWrite(PIN_ROM_CE, LOW);
+  controlOut(F_SRA_OE | F_SRD_OE, false, true);
 
   for (unsigned long i = 0; i < bufferSize; i++) {
     unsigned long target_address = addr24bit + i;
@@ -1284,8 +1358,10 @@ int writeBuffer(long addr24bit, int *buffer, int bufferSize, bool waitSuccess, b
     shiftOutAddressAndData(target_address, flipBytes ? flipIntBytes(buffer[i]) : buffer[i]);
 
     // we have PORTB pins are offset by 8
-    PORTB &= ~(1 << (8 - PIN_ROM_WE));
-    PORTB |= 1 << (8 - PIN_ROM_WE);
+    // PORTB &= ~(1 << (8 - PIN_ROM_WE));
+    // PORTB |= 1 << (8 - PIN_ROM_WE);
+    digitalWrite(PIN_ROM_WE, LOW);
+    digitalWrite(PIN_ROM_WE, HIGH);
 
     if (true) {
       continue;
@@ -1440,9 +1516,12 @@ void shiftOutAddressAndData(long addr24bit, int data16bit) {
 unsigned int in16bits(long addr24bit) {
   // enable output on ROM
   controlOut(F_SRD_OE, true, true);
+  
   outAddress(addr24bit);
 
-  controlOut(F_ROM_CE | F_ROM_OE, false, true);
+  digitalWrite(PIN_ROM_OE, LOW);
+  digitalWrite(PIN_ROM_CE, LOW);
+
   controlOut(F_SL165_LD, false, true);
   controlOut(F_SL165_LD, true, true);
 
@@ -1484,14 +1563,24 @@ unsigned char calc_crc(unsigned char message[], unsigned int len) {
   return calc_crc(message, len, 0);
 }
 
-void handleGenSignal() {
+void handleGenSignal(unsigned int interruptId) {
+  
+
+  // halve the address as we are reading words not bytes
   long addr = 0xd000 / 2;
+  // long addr = 0xd000;
 
-  enableControl();
+  unsigned int intCode = in16bits(addr);
+  Serial.print("Got sega request: "); Serial.print(intCode, HEX);
+  Serial.print(", interruptId: ");Serial.println(interruptId, HEX);
 
-  int inValue = in16bits(addr);
+  Serial.print("Data at interop: ");
+  for (int i = 0; i < 16; i++) {
+    unsigned int val = in16bits(addr+ i);
+    Serial.print(val, HEX);
+  }
+  Serial.println();
 
-  Serial.print("Got sega request: "); Serial.println(inValue, HEX);
 
   // char inString[64];
   // int index = 0;
@@ -1509,11 +1598,16 @@ void handleGenSignal() {
   // Serial.print("Input string: ");Serial.println(inString);
 
 
-  if (inValue == 0x0001) {
-    Serial.println("Listing files...");
+  if (intCode == 0x0001) {
+    unsigned int offset = in16bits(addr+1); 
+    unsigned int count = in16bits(addr+2); 
+    Serial.print("Listing files... from: ");
+    Serial.print(offset);
+    Serial.print(", numfiles: ");
+    Serial.println(count);
     // write sd filenames to genesis
     selectSPIChannel(SD_CH);
-    bool sdOpen = SD.begin();
+    bool sdOpen = SD.begin(SD_CS_PIN);
     File root = SD.open("/");
     addr += 1;
     
@@ -1540,12 +1634,15 @@ void handleGenSignal() {
 
     while (true) {
       selectSPIChannel(SD_CH);
+
       File entry =  root.openNextFile();
       // filter out Mac OS & hidden files
       String fnString = String(entry.name());
-      if (fnString.startsWith("FSEVEN") ||
-        fnString.startsWith("METADA") ||
+      if (fnString.startsWith("FSEVEN~1") ||
+        fnString.startsWith("METADA~1") ||
+        fnString.startsWith("TRASHE~1") ||
         fnString.startsWith("_BOOT")) {
+        entry.close();
         continue;
       }
 
@@ -1554,6 +1651,12 @@ void handleGenSignal() {
         strEntry[0] = 1;
         strEntry[1] = 0;
         break;
+      }
+
+      if (offset > 0) {
+        entry.close();
+        offset--;
+        continue;
       }
 
       // each entry header is 2 bytes / 1 word (easier to deal with words on 16bit system)
@@ -1585,6 +1688,11 @@ void handleGenSignal() {
 
       // }
       entry.close();
+
+      if (--count == 0) {
+        break;
+      }
+
     }
     root.close();
 
@@ -1597,7 +1705,7 @@ void handleGenSignal() {
     memset(strEntry + 2, 0, 62);
     writeBuffer(addr, (int *)strEntry, 32, true, true);
 
-  } else if (inValue == 0x0002) {
+  } else if (intCode == 0x0002) {
     // read filename & flash it
     int index = 0;
     Serial.print("Read words: 0x");
@@ -1618,10 +1726,8 @@ void handleGenSignal() {
     // flashAndStartROM(filename);
   } else {
     char strOut[64];
-    sprintf(strOut, "FrmArd: 0x%x", inValue + 1);
-    writeBuffer(addr + 1, (int *)strOut, sizeof(strOut) / 2, true, true);
+    sprintf(strOut, "FrmArd: 0x%x", intCode + 1);
+    // writeBuffer(addr + 1, (int *)strOut, sizeof(strOut) / 2, true, true);
   }
-  
-  disableControl();
 
 }
