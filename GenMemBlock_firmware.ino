@@ -164,13 +164,12 @@ void enableControl() {
     controlOut(F_SL165_LD, false, true);
     digitalWrite(SR595_LD, LOW);
     
+    digitalWrite(PIN_ROM_WE, HIGH);
+
     pinMode(PIN_ROM_WE, OUTPUT);
     pinMode(PIN_ROM_OE, OUTPUT);
     pinMode(PIN_ROM_CE, OUTPUT);
-
-    pinMode(PIN_ROM_WE, OUTPUT);
     
-    digitalWrite(PIN_ROM_WE, HIGH);
     controlOut(F_GEN_TX_EN, true, true);
 
     // controlOut(0xff &~ F_SL165_LD, true, true);
@@ -194,6 +193,8 @@ void disableControl() {
 
   controlOut(0xff, true, true);
   controlOut(F_GEN_TX_EN, false, true);
+
+  // selectSPIChannel(ROM_CH);
   
   enabled = false;
   delay(50);
